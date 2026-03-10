@@ -37,6 +37,11 @@ resource "azurerm_log_analytics_workspace" "main" {
   resource_group_name = var.resource_group_name
   sku                 = "PerGB2018"
   retention_in_days   = 30
+
+  # Suppression immédiate et permanente lors d'un terraform destroy —
+  # évite le soft-delete de 14 jours qui bloque les redéploiements.
+  immediate_data_purge_on_30_days_enabled = true
+  
   tags                = local.common_tags
 }
 
