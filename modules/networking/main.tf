@@ -2,13 +2,14 @@
 # Phase 8C - Messaging et Integration
 # Module : networking
 # Fichier : main.tf
-# Description : Resource Group, VNet, 4 subnets, NSGs, zones DNS privées
-#               et Log Analytics Workspace.
+# Description : Resource Group, VNet, 4 subnets, NSGs, zones DNS privées.
 #               Quatre subnets :
 #                 AzureBastionSubnet — Azure Bastion Standard SKU
 #                 snet-app           — VM Flask + consumer Event Hub
 #                 snet-monitoring    — VM Prometheus / Grafana / Pushgateway
 #                 snet-pe            — Private Endpoints Service Bus, Event Hub, Key Vault
+#               Le Log Analytics Workspace est déployé dans le module monitoring
+#               et non ici — il reçoit les diagnostic settings de tous les modules.
 # Auteur : Palou
 # Date : Mars 2026
 # ==============================================================================
@@ -91,6 +92,36 @@ resource "azurerm_subnet" "pe" {
 }
 
 # ==============================================================================
+# AZURE BASTION
+# SKU Standard requis pour les tunnels TCP natifs (az network bastion tunnel).
+# Déployé dans AzureBastionSubnet — nom imposé par Azure.
+# Fournit l'accès SSH sécurisé aux deux VMs sans IP publique (zero-trust).
+# ==============================================================================
+
+resource "azurerm_public_ip" "bastion" {
+  name                = "pip-bastion-${local.prefix}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  allocation_method   = "Static"
+  sku                 = "Standard"
+  tags                = local.common_tags
+}
+
+resource "azurerm_bastion_host" "main" {
+  name                = "bastion-${local.prefix}"
+  location            = azurerm_resource_group.main.location
+  resource_group_name = azurerm_resource_group.main.name
+  sku                 = "Standard"
+  tags                = local.common_tags
+
+  ip_configuration {
+    name                 = "ipconfig-bastion-${local.prefix}"
+    subnet_id            = azurerm_subnet.bastion.id
+    public_ip_address_id = azurerm_public_ip.bastion.id
+  }
+}
+
+# ==============================================================================
 # NSG — voir nsg-rules.tf
 # ==============================================================================
 
@@ -136,20 +167,4 @@ resource "azurerm_private_dns_zone_virtual_network_link" "keyvault" {
   virtual_network_id    = azurerm_virtual_network.main.id
   registration_enabled  = false
   tags                  = local.common_tags
-}
-
-# ==============================================================================
-# LOG ANALYTICS WORKSPACE
-# Déployé dans le module networking car il est partagé par tous les modules.
-# Chaque module de service reçoit le LAW ID en variable et crée ses propres
-# diagnostic settings.
-# ==============================================================================
-
-resource "azurerm_log_analytics_workspace" "main" {
-  name                = "law-${local.prefix}"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
-  sku                 = "PerGB2018"
-  retention_in_days   = 30
-  tags                = local.common_tags
 }
