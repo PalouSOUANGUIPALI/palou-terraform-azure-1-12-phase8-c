@@ -6,8 +6,12 @@
 #               1. Vérifie les prérequis (CLI, connexions)
 #               2. Crée les 3 workspaces dans Terraform Cloud
 #               3. Configure les variables sensitives
-#                  (credentials Azure, clé SSH, connection strings)
+#                  (credentials Azure, clé SSH)
 #               4. Valide les fichiers Terraform
+#
+#               Les connection strings Service Bus et Event Hub sont
+#               dérivés des outputs des modules Terraform — ils ne
+#               sont pas des variables TFC.
 #
 #               Pas de remote state partagé entre workspaces :
 #               chaque environnement est totalement indépendant.
@@ -325,9 +329,9 @@ info "Créés : $CREATED | Déjà existants : $SKIPPED"
 
 separator "PHASE 3 : Configuration des variables"
 
-echo "  Les credentials Azure, la clé SSH et les connection strings"
-echo "  seront stockés comme variables Terraform sensitives"
-echo "  dans TFC. Jamais dans le code source."
+echo "  Les credentials Azure et la clé SSH seront stockés comme"
+echo "  variables Terraform sensitives dans TFC."
+echo "  Jamais dans le code source."
 echo ""
 echo "  Où trouver les credentials dans le portail Azure :"
 echo "    subscription_id : Abonnements > votre abonnement > ID d'abonnement"
@@ -335,11 +339,9 @@ echo "    tenant_id       : Microsoft Entra ID > Vue d'ensemble > ID du locatair
 echo "    client_id       : Entra ID > Inscriptions d'applications > votre SP > ID d'application"
 echo "    client_secret   : Entra ID > Inscriptions d'applications > votre SP > Certificats et secrets"
 echo ""
-echo "  Connection strings Service Bus et Event Hub :"
-echo "    Portail Azure > Service Bus Namespace > Shared access policies > RootManageSharedAccessKey"
-echo "    Portail Azure > Event Hub Namespace > Shared access policies > RootManageSharedAccessKey"
-echo "    Note : les connection strings sont récupérés APRÈS le premier déploiement Terraform"
-echo "           qui crée les namespaces. Relancez ce script après le premier apply si besoin."
+echo "  Note : les connection strings Service Bus et Event Hub sont dérivés"
+echo "  automatiquement des outputs des modules Terraform — ils ne sont pas"
+echo "  des variables TFC."
 echo ""
 
 # Credentials Azure
@@ -354,12 +356,6 @@ if [ -z "$CLIENT_ID" ]; then error "client_id est obligatoire."; exit 1; fi
 
 CLIENT_SECRET=$(read_visible "client_secret : ")
 if [ -z "$CLIENT_SECRET" ]; then error "client_secret est obligatoire."; exit 1; fi
-
-# Connection strings Service Bus et Event Hub
-echo ""
-echo "  Connection strings (laisser vide si pas encore déployé — à relancer après le premier apply) :"
-SB_CONN=$(read_visible "servicebus_connection_string : ")
-EVH_CONN=$(read_visible "eventhub_connection_string : ")
 
 # Clé SSH
 echo ""
@@ -388,19 +384,6 @@ for ENTRY in "${WORKSPACES[@]}"; do
   create_or_update_variable "$WS_ID" "client_id"         "$CLIENT_ID"     "true"
   create_or_update_variable "$WS_ID" "client_secret"     "$CLIENT_SECRET" "true"
   create_or_update_variable "$WS_ID" "vm_ssh_public_key" "$SSH_KEY"       "true"
-
-  # Connection strings — optionnels au premier lancement
-  if [ -n "$SB_CONN" ]; then
-    create_or_update_variable "$WS_ID" "servicebus_connection_string" "$SB_CONN"  "true"
-  else
-    info "servicebus_connection_string : ignoré (vide)"
-  fi
-
-  if [ -n "$EVH_CONN" ]; then
-    create_or_update_variable "$WS_ID" "eventhub_connection_string" "$EVH_CONN" "true"
-  else
-    info "eventhub_connection_string : ignoré (vide)"
-  fi
 done
 
 # ==============================================================================
@@ -515,7 +498,3 @@ echo "     ./scripts/deploy-prod.sh"
 echo ""
 echo "  Ou tout déployer d'un coup :"
 echo "     ./scripts/deploy-all.sh"
-echo ""
-echo "  3. Après le premier apply — récupérer les connection strings et"
-echo "     relancer ce script pour les injecter dans TFC :"
-echo "     ./scripts/setup-azure.sh"
