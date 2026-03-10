@@ -42,8 +42,8 @@ output "subscription_sub_alerts_id" {
 }
 
 output "private_endpoint_ip" {
-  description = "IP privée du Private Endpoint Service Bus dans snet-pe"
-  value       = azurerm_private_endpoint.servicebus.private_service_connection[0].private_ip_address
+  description = "IP privée du Private Endpoint Service Bus dans snet-pe — null en dev/staging (SKU Standard, pas de PE)"
+  value       = var.servicebus_sku == "Premium" ? azurerm_private_endpoint.servicebus[0].private_service_connection[0].private_ip_address : null
 }
 
 output "connection_string" {

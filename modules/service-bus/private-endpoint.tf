@@ -6,11 +6,17 @@
 #               Utilise la zone DNS privatelink.servicebus.windows.net
 #               partagée avec Event Hub — les deux services utilisent
 #               la même zone DNS privée.
+#               Le Private Endpoint n'est disponible qu'en SKU Premium —
+#               cette ressource est donc conditionnelle :
+#                 dev/staging (Standard) → pas de PE, accès via Internet Azure
+#                 prod        (Premium)  → PE dans snet-pe, accès privé uniquement
 # Auteur : Palou
 # Date : Mars 2026
 # ==============================================================================
 
 resource "azurerm_private_endpoint" "servicebus" {
+  count = var.servicebus_sku == "Premium" ? 1 : 0
+
   name                = "pe-sb-${local.prefix}"
   location            = var.location
   resource_group_name = var.resource_group_name
