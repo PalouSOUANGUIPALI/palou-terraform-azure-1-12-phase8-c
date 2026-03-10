@@ -3,15 +3,18 @@
 # Phase 8C - Messaging et Integration
 # Fichier : cloud-init-app.tftpl
 # Description : Initialisation de la VM Flask.
-#               Installe Python 3, les dépendances Flask et azure-servicebus,
+#               Installe Python 3, les dependances Flask et azure-servicebus,
 #               azure-eventhub, azure-identity, azure-keyvault-secrets.
 #               Configure deux services systemd :
 #                 flask-app.service          — API Flask sur port 5000
-#                 eventhub-consumer.service  — consumer Event Hub → Pushgateway
-#               Les variables KEY_VAULT_URL et APP_ENV sont injectées dans
-#               les services systemd — elles ne sont jamais écrites en clair.
-# write_files s'exécute avant runcmd — les fichiers sont écrits dans /tmp/
-# puis copiés après mkdir -p dans runcmd (les répertoires n'existent pas encore
+#                 eventhub-consumer.service  — consumer Event Hub Pushgateway
+#               Les variables KEY_VAULT_URL et APP_ENV sont injectees dans
+#               les services systemd — elles ne sont jamais ecrites en clair.
+#               Le vrai code Flask est embarque directement dans ce template
+#               (pas de git clone) — main.py et consumer.py sont ecrits par
+#               cloud-init et non remplaces apres coup.
+# write_files s'execute avant runcmd — les fichiers sont ecrits dans /tmp/
+# puis copies apres mkdir -p dans runcmd (les repertoires n'existent pas encore
 # au moment de write_files).
 # Auteur : Palou
 # Date : Mars 2026
@@ -30,14 +33,401 @@ write_files:
 
   - path: /tmp/main.py
     content: |
-      # Placeholder — remplacé par le vrai main.py depuis le dépôt git
-      # Ce fichier est écrit par cloud-init puis remplacé par startup.sh
-      print("main.py placeholder")
+      import os
+      import json
+      import uuid
+      import logging
+      from datetime import datetime, timezone
+
+      from flask import Flask, jsonify, request
+      from azure.identity import ManagedIdentityCredential
+      from azure.keyvault.secrets import SecretClient
+      from azure.servicebus import ServiceBusClient, ServiceBusMessage
+      from azure.eventhub import EventHubProducerClient, EventData
+
+      logging.basicConfig(
+          level=logging.INFO,
+          format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+      )
+      logger = logging.getLogger(__name__)
+
+      app = Flask(__name__)
+
+      KEY_VAULT_URL = os.getenv("KEY_VAULT_URL", "")
+      APP_ENV       = os.getenv("APP_ENV", "dev")
+
+      SERVICEBUS_QUEUE_ORDERS = "orders"
+      SERVICEBUS_TOPIC_EVENTS = "events"
+      SERVICEBUS_MAX_MESSAGES = 1
+
+      def get_secret(secret_name):
+          if not KEY_VAULT_URL:
+              raise ValueError("KEY_VAULT_URL non definie")
+          credential = ManagedIdentityCredential()
+          client = SecretClient(vault_url=KEY_VAULT_URL, credential=credential)
+          return client.get_secret(secret_name).value
+
+      def init_clients():
+          logger.info("Initialisation clients via Key Vault : %s", KEY_VAULT_URL)
+          servicebus_conn = get_secret("servicebus-connection-string")
+          eventhub_conn   = get_secret("eventhub-connection-string")
+          logger.info("Connection strings lus depuis Key Vault")
+          return servicebus_conn, eventhub_conn
+
+      servicebus_conn_str, eventhub_conn_str = init_clients()
+
+      def get_servicebus_client():
+          return ServiceBusClient.from_connection_string(servicebus_conn_str)
+
+      def get_eventhub_producer():
+          return EventHubProducerClient.from_connection_string(
+              eventhub_conn_str,
+              eventhub_name="app-metrics"
+          )
+
+      @app.route("/health")
+      def health():
+          status = {
+              "service":     "flask-phase8c",
+              "environment": APP_ENV,
+              "services": {
+                  "service_bus": {"status": "unknown"},
+                  "event_hub":   {"status": "unknown"}
+              }
+          }
+          http_code = 200
+
+          try:
+              with get_servicebus_client() as client:
+                  with client.get_queue_receiver(
+                      queue_name=SERVICEBUS_QUEUE_ORDERS,
+                      max_wait_time=2
+                  ):
+                      pass
+              status["services"]["service_bus"] = {"status": "healthy"}
+          except Exception as e:
+              status["services"]["service_bus"] = {"status": "unhealthy", "error": str(e)}
+              http_code = 503
+
+          try:
+              with get_eventhub_producer() as producer:
+                  _ = producer.get_eventhub_properties()
+              status["services"]["event_hub"] = {"status": "healthy"}
+          except Exception as e:
+              status["services"]["event_hub"] = {"status": "unhealthy", "error": str(e)}
+              http_code = 503
+
+          status["status"] = "healthy" if http_code == 200 else "degraded"
+          return jsonify(status), http_code
+
+      @app.route("/api/messages/send", methods=["POST"])
+      def send_message():
+          data = request.get_json(silent=True) or {}
+          if not data.get("product"):
+              return jsonify({"error": "product est requis"}), 400
+
+          message_body = {
+              "order_id":    data.get("order_id", str(uuid.uuid4())),
+              "product":     data["product"],
+              "quantity":    data.get("quantity", 1),
+              "sent_at":     datetime.now(timezone.utc).isoformat(),
+              "environment": APP_ENV
+          }
+
+          try:
+              with get_servicebus_client() as client:
+                  with client.get_queue_sender(queue_name=SERVICEBUS_QUEUE_ORDERS) as sender:
+                      msg = ServiceBusMessage(
+                          json.dumps(message_body),
+                          content_type="application/json"
+                      )
+                      sender.send_messages(msg)
+              logger.info("Message envoye queue orders : order_id=%s", message_body["order_id"])
+              return jsonify({"sent": True, "message": message_body}), 201
+          except Exception as e:
+              logger.error("Erreur envoi message : %s", str(e))
+              return jsonify({"error": str(e)}), 500
+
+      @app.route("/api/messages/receive", methods=["GET"])
+      def receive_message():
+          try:
+              with get_servicebus_client() as client:
+                  with client.get_queue_receiver(
+                      queue_name=SERVICEBUS_QUEUE_ORDERS,
+                      max_wait_time=3
+                  ) as receiver:
+                      messages = receiver.receive_messages(
+                          max_message_count=SERVICEBUS_MAX_MESSAGES,
+                          max_wait_time=3
+                      )
+                      if not messages:
+                          return jsonify({"message": None, "queue_empty": True}), 204
+
+                      msg = messages[0]
+                      body = json.loads(str(msg))
+                      receiver.complete_message(msg)
+                      return jsonify({
+                          "message":           body,
+                          "delivery_count":    msg.delivery_count,
+                          "enqueued_time_utc": str(msg.enqueued_time_utc)
+                      })
+          except Exception as e:
+              logger.error("Erreur reception message : %s", str(e))
+              return jsonify({"error": str(e)}), 500
+
+      @app.route("/api/messages/dlq", methods=["GET"])
+      def inspect_dlq():
+          try:
+              with get_servicebus_client() as client:
+                  with client.get_queue_receiver(
+                      queue_name=SERVICEBUS_QUEUE_ORDERS,
+                      sub_queue="deadletter",
+                      max_wait_time=3
+                  ) as receiver:
+                      messages = receiver.peek_messages(max_message_count=10)
+                      result = []
+                      for msg in messages:
+                          result.append({
+                              "body":               json.loads(str(msg)),
+                              "delivery_count":     msg.delivery_count,
+                              "dead_letter_reason": msg.dead_letter_reason,
+                              "enqueued_time_utc":  str(msg.enqueued_time_utc)
+                          })
+              return jsonify({"dlq_messages": result, "count": len(result)})
+          except Exception as e:
+              logger.error("Erreur inspection DLQ : %s", str(e))
+              return jsonify({"error": str(e)}), 500
+
+      @app.route("/api/messages/dlq/reprocess", methods=["POST"])
+      def reprocess_dlq():
+          try:
+              with get_servicebus_client() as client:
+                  with client.get_queue_receiver(
+                      queue_name=SERVICEBUS_QUEUE_ORDERS,
+                      sub_queue="deadletter",
+                      max_wait_time=3
+                  ) as receiver:
+                      messages = receiver.receive_messages(
+                          max_message_count=SERVICEBUS_MAX_MESSAGES,
+                          max_wait_time=3
+                      )
+                      if not messages:
+                          return jsonify({"reprocessed": False, "dlq_empty": True}), 204
+
+                      msg = messages[0]
+                      body = json.loads(str(msg))
+                      receiver.complete_message(msg)
+
+                  with client.get_queue_sender(queue_name=SERVICEBUS_QUEUE_ORDERS) as sender:
+                      requeued = ServiceBusMessage(
+                          json.dumps(body),
+                          content_type="application/json"
+                      )
+                      sender.send_messages(requeued)
+
+              return jsonify({"reprocessed": True, "message": body})
+          except Exception as e:
+              logger.error("Erreur retraitement DLQ : %s", str(e))
+              return jsonify({"error": str(e)}), 500
+
+      @app.route("/api/events/publish", methods=["POST"])
+      def publish_event():
+          data = request.get_json(silent=True) or {}
+          if not data.get("type") or not data.get("level"):
+              return jsonify({"error": "type et level sont requis"}), 400
+
+          event_body = {
+              "event_id":     str(uuid.uuid4()),
+              "type":         data["type"],
+              "level":        data["level"],
+              "payload":      data.get("payload", {}),
+              "published_at": datetime.now(timezone.utc).isoformat(),
+              "environment":  APP_ENV
+          }
+
+          try:
+              with get_servicebus_client() as client:
+                  with client.get_topic_sender(topic_name=SERVICEBUS_TOPIC_EVENTS) as sender:
+                      msg = ServiceBusMessage(
+                          json.dumps(event_body),
+                          content_type="application/json",
+                          application_properties={"level": data["level"]}
+                      )
+                      sender.send_messages(msg)
+              return jsonify({"published": True, "event": event_body}), 201
+          except Exception as e:
+              logger.error("Erreur publication event : %s", str(e))
+              return jsonify({"error": str(e)}), 500
+
+      @app.route("/api/events/subscribe/<subscription>", methods=["GET"])
+      def receive_event(subscription):
+          valid_subscriptions = ["sub-logs", "sub-alerts"]
+          if subscription not in valid_subscriptions:
+              return jsonify({"error": "Subscription invalide : " + str(valid_subscriptions)}), 400
+
+          try:
+              with get_servicebus_client() as client:
+                  with client.get_subscription_receiver(
+                      topic_name=SERVICEBUS_TOPIC_EVENTS,
+                      subscription_name=subscription,
+                      max_wait_time=3
+                  ) as receiver:
+                      messages = receiver.receive_messages(
+                          max_message_count=SERVICEBUS_MAX_MESSAGES,
+                          max_wait_time=3
+                      )
+                      if not messages:
+                          return jsonify({"event": None, "subscription_empty": True}), 204
+
+                      msg = messages[0]
+                      body = json.loads(str(msg))
+                      receiver.complete_message(msg)
+                      return jsonify({
+                          "event":             body,
+                          "subscription":      subscription,
+                          "delivery_count":    msg.delivery_count,
+                          "enqueued_time_utc": str(msg.enqueued_time_utc)
+                      })
+          except Exception as e:
+              logger.error("Erreur reception event subscription=%s : %s", subscription, str(e))
+              return jsonify({"error": str(e)}), 500
+
+      @app.route("/api/metrics/emit", methods=["POST"])
+      def emit_metric():
+          data = request.get_json(silent=True) or {}
+          if not data.get("name") or data.get("value") is None:
+              return jsonify({"error": "name et value sont requis"}), 400
+
+          metric = {
+              "metric_id":   str(uuid.uuid4()),
+              "name":        data["name"],
+              "value":       float(data["value"]),
+              "labels":      data.get("labels", {}),
+              "emitted_at":  datetime.now(timezone.utc).isoformat(),
+              "environment": APP_ENV
+          }
+
+          try:
+              with get_eventhub_producer() as producer:
+                  batch = producer.create_batch()
+                  batch.add(EventData(json.dumps(metric)))
+                  producer.send_batch(batch)
+              return jsonify({"emitted": True, "metric": metric}), 201
+          except Exception as e:
+              logger.error("Erreur emission metrique Event Hub : %s", str(e))
+              return jsonify({"error": str(e)}), 500
+
+      if __name__ == "__main__":
+          port = int(os.getenv("PORT", 5000))
+          app.run(host="0.0.0.0", port=port, debug=False)
 
   - path: /tmp/consumer.py
     content: |
-      # Placeholder — remplacé par le vrai consumer.py depuis le dépôt git
-      print("consumer.py placeholder")
+      import os
+      import json
+      import logging
+      import time
+      import urllib.request
+      import urllib.error
+
+      from azure.identity import ManagedIdentityCredential
+      from azure.keyvault.secrets import SecretClient
+      from azure.eventhub import EventHubConsumerClient
+
+      logging.basicConfig(
+          level=logging.INFO,
+          format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
+      )
+      logger = logging.getLogger(__name__)
+
+      KEY_VAULT_URL   = os.getenv("KEY_VAULT_URL", "")
+      APP_ENV         = os.getenv("APP_ENV", "dev")
+      PUSHGATEWAY_URL = os.getenv("PUSHGATEWAY_URL", "http://10.0.4.4:9091")
+
+      EVENTHUB_NAME   = "app-metrics"
+      CONSUMER_GROUP  = "grafana"
+      PUSHGATEWAY_JOB = "flask_app_metrics"
+
+      def get_secret(secret_name):
+          if not KEY_VAULT_URL:
+              raise ValueError("KEY_VAULT_URL non definie")
+          credential = ManagedIdentityCredential()
+          client = SecretClient(vault_url=KEY_VAULT_URL, credential=credential)
+          return client.get_secret(secret_name).value
+
+      def push_metric_to_gateway(name, value, labels, environment):
+          label_path = "environment/" + environment
+          for k, v in labels.items():
+              label_path += "/" + str(k) + "/" + str(v)
+
+          url = PUSHGATEWAY_URL + "/metrics/job/" + PUSHGATEWAY_JOB + "/" + label_path
+          safe_name = name.replace("-", "_").replace(".", "_")
+          body = "# TYPE " + safe_name + " gauge\n" + safe_name + " " + str(value) + "\n"
+
+          try:
+              req = urllib.request.Request(
+                  url,
+                  data=body.encode("utf-8"),
+                  method="POST",
+                  headers={"Content-Type": "text/plain"}
+              )
+              with urllib.request.urlopen(req, timeout=5) as resp:
+                  logger.debug("Metrique poussee Pushgateway : %s=%s status=%d", safe_name, value, resp.status)
+          except urllib.error.URLError as e:
+              logger.error("Erreur push Pushgateway : %s - %s", safe_name, str(e))
+
+      def on_event(partition_context, event):
+          try:
+              body   = json.loads(event.body_as_str())
+              name   = body.get("name", "unknown_metric")
+              value  = float(body.get("value", 0))
+              labels = body.get("labels", {})
+              env    = body.get("environment", APP_ENV)
+
+              logger.info("Event recu partition=%s name=%s value=%s",
+                  partition_context.partition_id, name, value)
+
+              push_metric_to_gateway(name, value, labels, env)
+              partition_context.update_checkpoint(event)
+
+          except json.JSONDecodeError as e:
+              logger.error("Event non parseable JSON : %s", str(e))
+          except Exception as e:
+              logger.error("Erreur traitement event : %s", str(e))
+
+      def on_error(partition_context, error):
+          if partition_context:
+              logger.error("Erreur consumer partition=%s : %s",
+                  partition_context.partition_id, str(error))
+          else:
+              logger.error("Erreur consumer : %s", str(error))
+
+      def main():
+          logger.info("Demarrage consumer Event Hub - env=%s", APP_ENV)
+          eventhub_conn = get_secret("eventhub-connection-string")
+
+          while True:
+              try:
+                  client = EventHubConsumerClient.from_connection_string(
+                      eventhub_conn,
+                      consumer_group=CONSUMER_GROUP,
+                      eventhub_name=EVENTHUB_NAME
+                  )
+                  with client:
+                      logger.info("Consumer actif - en attente d'events")
+                      client.receive(
+                          on_event=on_event,
+                          on_error=on_error,
+                          starting_position="-1"
+                      )
+              except KeyboardInterrupt:
+                  break
+              except Exception as e:
+                  logger.error("Erreur connexion Event Hub : %s - retry dans 30s", str(e))
+                  time.sleep(30)
+
+      if __name__ == "__main__":
+          main()
 
   - path: /tmp/flask-app.service
     content: |
