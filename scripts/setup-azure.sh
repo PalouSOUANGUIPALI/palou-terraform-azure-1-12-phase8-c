@@ -359,7 +359,7 @@ if [ -z "$CLIENT_SECRET" ]; then error "client_secret est obligatoire."; exit 1;
 
 # Clé SSH
 echo ""
-SSH_KEY_FILE="$HOME/.ssh/id_rsa_azure"
+SSH_KEY_FILE="$HOME/.ssh/id_rsa_azure.pub"
 if [ ! -f "$SSH_KEY_FILE" ]; then
   error "Clé SSH introuvable : $SSH_KEY_FILE"
   echo "         Générez-la avec :"
