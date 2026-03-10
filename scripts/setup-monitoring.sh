@@ -271,13 +271,17 @@ trap 'info "Fermeture du tunnel Bastion..."; kill "$TUNNEL_PID" 2>/dev/null || t
 
 separator "PHASE 5 : Copie des fichiers monitoring"
 
+# Options SSH — port en minuscule -p pour ssh
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY -p $SSH_PORT_MONITORING"
+
+# Options SCP — port en majuscule -P pour scp
+SCP_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY -P $SSH_PORT_MONITORING"
 
 # Fonction de copie scp via tunnel
 scp_to_vm() {
   local src="$1"
   local dst="$2"
-  scp $SSH_OPTS "$src" "azureuser@$LOCAL_HOST:$dst"
+  scp $SCP_OPTS "$src" "azureuser@$LOCAL_HOST:$dst"
 }
 
 # Fonction ssh via tunnel
