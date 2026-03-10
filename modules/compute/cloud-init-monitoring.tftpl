@@ -1,0 +1,36 @@
+#cloud-config
+# ==============================================================================
+# Phase 8C - Messaging et Integration
+# Fichier : cloud-init-monitoring.tftpl
+# Description : Initialisation de la VM Monitoring.
+#               Installe Docker et Docker Compose, crée les répertoires
+#               de configuration. Les fichiers de configuration
+#               (prometheus.yml, docker-compose.yml, dashboards Grafana)
+#               sont copiés par scripts/setup-monitoring.sh via tunnel Bastion.
+#               docker compose up est également lancé par setup-monitoring.sh
+#               après injection de GF_ADMIN_PASSWORD.
+# write_files s'exécute avant runcmd — fichiers écrits dans /tmp/ puis
+# copiés dans runcmd après mkdir -p.
+# Auteur : Palou
+# Date : Mars 2026
+# ==============================================================================
+
+runcmd:
+  - apt-get update
+  - apt-get install -y ca-certificates curl gnupg lsb-release
+
+  # Installation Docker
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - chmod a+r /etc/apt/keyrings/docker.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - usermod -aG docker azureuser
+
+  # Répertoires monitoring — remplis par scripts/setup-monitoring.sh
+  - mkdir -p /opt/monitoring/grafana/provisioning/datasources
+  - mkdir -p /opt/monitoring/grafana/provisioning/dashboards
+  - mkdir -p /opt/monitoring/prometheus/rules
+
+  - chown -R azureuser:azureuser /opt/monitoring

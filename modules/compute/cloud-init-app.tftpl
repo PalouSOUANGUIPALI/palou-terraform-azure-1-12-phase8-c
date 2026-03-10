@@ -1,0 +1,111 @@
+#cloud-config
+# ==============================================================================
+# Phase 8C - Messaging et Integration
+# Fichier : cloud-init-app.tftpl
+# Description : Initialisation de la VM Flask.
+#               Installe Python 3, les dépendances Flask et azure-servicebus,
+#               azure-eventhub, azure-identity, azure-keyvault-secrets.
+#               Configure deux services systemd :
+#                 flask-app.service          — API Flask sur port 5000
+#                 eventhub-consumer.service  — consumer Event Hub → Pushgateway
+#               Les variables KEY_VAULT_URL et APP_ENV sont injectées dans
+#               les services systemd — elles ne sont jamais écrites en clair.
+# write_files s'exécute avant runcmd — les fichiers sont écrits dans /tmp/
+# puis copiés après mkdir -p dans runcmd (les répertoires n'existent pas encore
+# au moment de write_files).
+# Auteur : Palou
+# Date : Mars 2026
+# ==============================================================================
+
+write_files:
+  - path: /tmp/requirements.txt
+    content: |
+      flask==2.3.3
+      werkzeug==2.3.7
+      gunicorn==21.2.0
+      azure-identity==1.15.0
+      azure-keyvault-secrets==4.7.0
+      azure-servicebus==7.11.4
+      azure-eventhub==5.11.5
+
+  - path: /tmp/main.py
+    content: |
+      # Placeholder — remplacé par le vrai main.py depuis le dépôt git
+      # Ce fichier est écrit par cloud-init puis remplacé par startup.sh
+      print("main.py placeholder")
+
+  - path: /tmp/consumer.py
+    content: |
+      # Placeholder — remplacé par le vrai consumer.py depuis le dépôt git
+      print("consumer.py placeholder")
+
+  - path: /tmp/flask-app.service
+    content: |
+      [Unit]
+      Description=Flask App - Phase 8C Messaging
+      After=network.target
+
+      [Service]
+      Type=simple
+      User=azureuser
+      WorkingDirectory=/opt/flask-app
+      Environment="KEY_VAULT_URL=${key_vault_url}"
+      Environment="APP_ENV=${environment}"
+      ExecStart=/opt/flask-app/venv/bin/gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 60 main:app
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /tmp/eventhub-consumer.service
+    content: |
+      [Unit]
+      Description=Event Hub Consumer - Phase 8C Messaging
+      After=network.target flask-app.service
+
+      [Service]
+      Type=simple
+      User=azureuser
+      WorkingDirectory=/opt/flask-app
+      Environment="KEY_VAULT_URL=${key_vault_url}"
+      Environment="APP_ENV=${environment}"
+      ExecStart=/opt/flask-app/venv/bin/python3 consumer.py
+      Restart=always
+      RestartSec=10
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /tmp/startup.sh
+    content: |
+      #!/bin/bash
+      set -e
+      cd /opt/flask-app
+      source venv/bin/activate
+      exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 60 main:app
+
+runcmd:
+  - apt-get update
+  - apt-get install -y python3 python3-pip python3-venv
+
+  - mkdir -p /opt/flask-app
+  - cp /tmp/requirements.txt /opt/flask-app/requirements.txt
+  - cp /tmp/main.py /opt/flask-app/main.py
+  - cp /tmp/consumer.py /opt/flask-app/consumer.py
+  - cp /tmp/startup.sh /opt/flask-app/startup.sh
+  - chmod +x /opt/flask-app/startup.sh
+
+  - python3 -m venv /opt/flask-app/venv
+  - /opt/flask-app/venv/bin/pip install --upgrade pip
+  - /opt/flask-app/venv/bin/pip install -r /opt/flask-app/requirements.txt
+
+  - chown -R azureuser:azureuser /opt/flask-app
+
+  - cp /tmp/flask-app.service /etc/systemd/system/flask-app.service
+  - cp /tmp/eventhub-consumer.service /etc/systemd/system/eventhub-consumer.service
+  - systemctl daemon-reload
+  - systemctl enable flask-app
+  - systemctl enable eventhub-consumer
+  - systemctl start flask-app
+  - systemctl start eventhub-consumer

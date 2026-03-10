@@ -1,0 +1,65 @@
+# ==============================================================================
+# Phase 8C - Messaging et Integration
+# Fichier : docker-compose.yml
+# Description : Stack monitoring — Pushgateway, Prometheus, Grafana.
+#               Déployée sur la VM Monitoring (snet-monitoring) via cloud-init.
+#               Pushgateway reçoit les métriques poussées par consumer.py
+#               depuis snet-app. Prometheus scrape Pushgateway toutes les 15s.
+#               Grafana expose les dashboards via le tunnel Bastion.
+#
+#               Variable requise avant docker compose up :
+#                 GF_ADMIN_PASSWORD — mot de passe admin Grafana
+#                 Définie dans scripts/setup-monitoring.sh ou cloud-init
+#
+#               Ports accessibles depuis l'ordinateur via tunnel Bastion :
+#                 Pushgateway : 9091
+#                 Prometheus  : 9090
+#                 Grafana     : 3000
+# Auteur : Palou
+# Date : Mars 2026
+# ==============================================================================
+
+services:
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - /opt/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Règles d'alerte — évaluées par Prometheus et exposées à Grafana
+      # Le répertoire est créé par cloud-init-monitoring.tftpl
+      - /opt/monitoring/prometheus/rules:/etc/prometheus/rules:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    restart: unless-stopped
+    depends_on:
+      - pushgateway
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # GF_ADMIN_PASSWORD est définie avant docker compose up
+      # via scripts/setup-monitoring.sh — jamais en clair dans ce fichier
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - /opt/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+
+volumes:
+  grafana-data:

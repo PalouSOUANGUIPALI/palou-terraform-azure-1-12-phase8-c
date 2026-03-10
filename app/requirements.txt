@@ -1,0 +1,29 @@
+# ==============================================================================
+# Phase 8C - Messaging et Integration
+# Fichier : requirements.txt
+# Description : Dépendances Python de l'application Flask.
+#               Versions pinnées pour éviter les conflits — leçon apprise en
+#               Phase 7A : Werkzeug 3.x incompatible avec Flask 2.3.3.
+#               Toutes les versions sont testées ensemble et figées.
+#               Installées dans /opt/flask-app/venv via cloud-init.
+# Auteur : Palou
+# Date : Mars 2026
+# ==============================================================================
+
+# --- Framework web ---
+Flask==2.3.3
+Werkzeug==2.3.7
+gunicorn==21.2.0
+
+# --- Azure Key Vault — lecture des connection strings via Managed Identity ---
+azure-identity==1.15.0
+azure-keyvault-secrets==4.7.0
+
+# --- Azure Service Bus — queues et topics ---
+azure-servicebus==7.11.4
+
+# --- Azure Event Hub — émission de métriques ---
+azure-eventhub==5.11.5
+
+# --- Prometheus client — format métriques pour Pushgateway ---
+prometheus-client==0.19.0

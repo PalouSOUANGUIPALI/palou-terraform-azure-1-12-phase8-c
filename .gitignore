@@ -1,0 +1,84 @@
+# ============================================
+# GITIGNORE : PHASE 8C
+# ============================================
+# Auteur : Palou
+# Date : Mars 2026
+# ============================================
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.lock.hcl
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Variables sensibles
+# Les tfvars ne contiennent pas de secrets (tout est dans TFC)
+# mais on les exclut par précaution
+#*.tfvars
+#!terraform.tfvars.example
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+*.egg-info/
+dist/
+build/
+.python_packages/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporaire
+*.zip
+*.bak
+*.tmp
+*.backup
+
+# Azure CLI
+.azure/
+
+# Scripts
+scripts/*.log
+scripts/outputs-*.json
+
+# Tests
+tests/*.log
+tests/outputs-*.json
+
+# Cloud-init
+# Fichiers générés localement lors du rendu des templates
+modules/compute/cloud-init-app-rendered.yaml
+modules/compute/cloud-init-monitoring-rendered.yaml
+
+# Monitoring
+# Le mot de passe Grafana ne doit jamais être stocké
+monitoring/.env
+monitoring/grafana/grafana.db
+monitoring/data/

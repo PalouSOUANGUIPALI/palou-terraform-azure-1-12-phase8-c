@@ -1,0 +1,18 @@
+# ==============================================================================
+# Phase 8C - Messaging et Integration
+# Fichier : datasource.yml
+# Description : Configuration de la datasource Prometheus pour Grafana.
+#               Prometheus tourne dans le même réseau Docker que Grafana —
+#               accessible par nom de service sur le port 9090.
+# Auteur : Palou
+# Date : Mars 2026
+# ==============================================================================
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

@@ -1,0 +1,23 @@
+# ==============================================================================
+# Phase 8C - Messaging et Integration
+# Fichier : dashboard.yml
+# Description : Configuration de provisioning Grafana — indique à Grafana
+#               le répertoire où chercher les fichiers JSON de dashboards.
+#               Sans ce fichier, les dashboards JSON sont ignorés au démarrage.
+#               Leçon apprise Phase 7B : le provisioning dashboard doit être
+#               déclaré explicitement — la datasource seule ne suffit pas.
+# Auteur : Palou
+# Date : Mars 2026
+# ==============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: phase8c-dashboards
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

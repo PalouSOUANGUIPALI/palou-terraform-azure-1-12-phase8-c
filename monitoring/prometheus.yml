@@ -1,0 +1,31 @@
+# ==============================================================================
+# Phase 8C - Messaging et Integration
+# Fichier : prometheus.yml
+# Description : Configuration Prometheus.
+#               Un seul job de scrape : pushgateway.
+#               honor_labels=true — conserve les labels poussés par consumer.py
+#               (job, environment, etc.) sans les écraser avec les labels
+#               Prometheus natifs. Sans cette option, le label "job" serait
+#               remplacé par "pushgateway" pour tous les métriques.
+#               rule_files — règles d'alerte évaluées par Prometheus
+#               et exposées à Grafana via la datasource Prometheus.
+# Auteur : Palou
+# Date : Mars 2026
+# ==============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Fichiers de règles d'alerte — évalués toutes les evaluation_interval
+# Les alertes sont lues par Grafana via la datasource Prometheus
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+scrape_configs:
+  - job_name: pushgateway
+    # honor_labels=true : préserve les labels envoyés par consumer.py
+    # Sans cette option, job=flask_app_metrics serait écrasé par job=pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
