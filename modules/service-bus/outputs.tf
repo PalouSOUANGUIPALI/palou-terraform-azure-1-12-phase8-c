@@ -45,3 +45,9 @@ output "private_endpoint_ip" {
   description = "IP privée du Private Endpoint Service Bus dans snet-pe"
   value       = azurerm_private_endpoint.servicebus.private_service_connection[0].private_ip_address
 }
+
+output "connection_string" {
+  description = "Connection string primaire du Service Bus Namespace — transmis au module key-vault pour stockage dans Key Vault"
+  value       = azurerm_servicebus_namespace.main.default_primary_connection_string
+  sensitive   = true
+}

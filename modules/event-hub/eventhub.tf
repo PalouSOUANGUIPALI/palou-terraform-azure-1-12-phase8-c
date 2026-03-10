@@ -21,13 +21,17 @@
 #   2 partitions suffisent pour un usage pédagogique — prod utiliserait 4+.
 # message_retention = 1 — les events sont conservés 1 jour.
 #   Cela permet au consumer de relire les events en cas de redémarrage.
+#
+# Note : le provider azurerm ~> 3.0 n'accepte plus namespace_id sur
+# azurerm_eventhub — il faut namespace_name + resource_group_name.
 # ==============================================================================
 
 resource "azurerm_eventhub" "app_metrics" {
-  name              = "app-metrics"
-  namespace_id      = azurerm_eventhub_namespace.main.id
-  partition_count   = var.eventhub_partition_count
-  message_retention = 1
+  name                = "app-metrics"
+  namespace_name      = azurerm_eventhub_namespace.main.name
+  resource_group_name = var.resource_group_name
+  partition_count     = var.eventhub_partition_count
+  message_retention   = 1
 }
 
 # ==============================================================================
