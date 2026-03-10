@@ -95,12 +95,6 @@ variable "servicebus_sku" {
   type        = string
 }
 
-variable "servicebus_connection_string" {
-  description = "Connection string Service Bus — stockée comme secret dans Key Vault"
-  type        = string
-  sensitive   = true
-}
-
 variable "eventhub_capacity" {
   description = "Nombre de Throughput Units pour le Event Hub Namespace"
   type        = number
@@ -110,13 +104,6 @@ variable "eventhub_partition_count" {
   description = "Nombre de partitions pour l'Event Hub app-metrics"
   type        = number
 }
-
-variable "eventhub_connection_string" {
-  description = "Connection string Event Hub — stockée comme secret dans Key Vault"
-  type        = string
-  sensitive   = true
-}
-
 variable "purge_protection_enabled" {
   description = "Active la protection contre la purge — false en dev/staging, true en prod"
   type        = bool

@@ -105,8 +105,8 @@ module "key_vault" {
   subnet_pe_id                 = module.networking.subnet_pe_id
   private_dns_zone_keyvault_id = module.networking.private_dns_zone_keyvault_id
   vm_app_identity_principal_id = module.compute.vm_app_identity_principal_id
-  servicebus_connection_string = var.servicebus_connection_string
-  eventhub_connection_string   = var.eventhub_connection_string
+  servicebus_connection_string = module.service_bus.connection_string
+  eventhub_connection_string   = module.event_hub.connection_string
   log_analytics_workspace_id   = module.monitoring.log_analytics_workspace_id
 
   tags = var.tags
