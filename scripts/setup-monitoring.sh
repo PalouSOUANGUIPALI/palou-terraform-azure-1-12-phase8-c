@@ -4,11 +4,12 @@
 # Script : setup-monitoring.sh
 # Description : Configure la stack monitoring sur la VM Monitoring.
 #               1. Vérifie les prérequis (Azure CLI, Bastion)
-#               2. Récupère l'IP privée de la VM Monitoring depuis TFC
+#               2. Récupère l'IP privée de la VM Monitoring depuis Azure
 #               3. Demande le mot de passe Grafana
 #               4. Ouvre un tunnel Bastion vers la VM Monitoring
 #               5. Copie les fichiers monitoring/ vers /opt/monitoring/
 #               6. Lance docker compose up avec GF_ADMIN_PASSWORD
+#               7. Ferme le tunnel et libère le port
 #
 #               Ce script est à relancer après chaque modification des
 #               fichiers dans monitoring/ — cloud-init installe Docker
@@ -45,6 +46,7 @@ SSH_KEY="$HOME/.ssh/id_rsa_azure"
 SSH_PORT_MONITORING=2222
 LOCAL_HOST="127.0.0.1"
 REMOTE_MONITORING_DIR="/opt/monitoring"
+TUNNEL_PID=""
 
 # ==============================================================================
 # FONCTIONS UTILITAIRES
@@ -68,6 +70,22 @@ usage() {
   echo "  Environnements valides : dev, staging, prod"
   echo ""
   exit 1
+}
+
+# Fermeture propre du tunnel et libération du port
+close_tunnel() {
+  if [ -n "$TUNNEL_PID" ]; then
+    info "Fermeture du tunnel Bastion (PID $TUNNEL_PID)..."
+    kill "$TUNNEL_PID" 2>/dev/null || true
+    TUNNEL_PID=""
+  fi
+  # Libération du port au cas où un processus résiduel l'occupe encore
+  local pid_on_port
+  pid_on_port=$(lsof -ti:"$SSH_PORT_MONITORING" 2>/dev/null || true)
+  if [ -n "$pid_on_port" ]; then
+    kill "$pid_on_port" 2>/dev/null || true
+  fi
+  sleep 1
 }
 
 # ==============================================================================
@@ -234,14 +252,14 @@ done
 
 separator "PHASE 4 : Ouverture du tunnel Bastion"
 
-info "Ouverture du tunnel Bastion vers $VM_MONITORING_IP:22 sur port local $SSH_PORT_MONITORING..."
-
-# Fermeture d'un éventuel tunnel existant sur le même port
+# Libération du port si déjà occupé
 if lsof -ti:"$SSH_PORT_MONITORING" &> /dev/null; then
-  info "Port $SSH_PORT_MONITORING déjà utilisé — fermeture du tunnel existant..."
+  info "Port $SSH_PORT_MONITORING déjà utilisé — libération..."
   kill "$(lsof -ti:"$SSH_PORT_MONITORING")" 2>/dev/null || true
   sleep 2
 fi
+
+info "Ouverture du tunnel Bastion vers $VM_MONITORING_IP:22 sur port local $SSH_PORT_MONITORING..."
 
 az network bastion tunnel \
   --name "$BASTION_NAME" \
@@ -258,10 +276,10 @@ sleep 15
 # Vérification du tunnel
 if ! kill -0 "$TUNNEL_PID" 2>/dev/null; then
   error "Le tunnel Bastion ne s'est pas établi correctement."
+  close_tunnel
   exit 1
 fi
 success "Tunnel Bastion actif sur port $SSH_PORT_MONITORING"
-
 
 # ==============================================================================
 # PHASE 5 : COPIE DES FICHIERS MONITORING
@@ -295,7 +313,6 @@ ssh_vm "sudo mkdir -p $REMOTE_MONITORING_DIR/grafana/provisioning/datasources \
   && sudo chown -R azureuser:azureuser $REMOTE_MONITORING_DIR"
 success "Répertoires prêts"
 
-# Copie des fichiers
 info "Copie docker-compose.yml..."
 scp_to_vm "monitoring/docker-compose.yml" "$REMOTE_MONITORING_DIR/docker-compose.yml"
 success "docker-compose.yml copié"
@@ -338,6 +355,21 @@ sleep 15
 info "Statut des conteneurs :"
 ssh_vm "cd $REMOTE_MONITORING_DIR && docker compose ps"
 
+# ==============================================================================
+# PHASE 7 : FERMETURE DU TUNNEL ET LIBÉRATION DU PORT
+# ==============================================================================
+
+separator "PHASE 7 : Fermeture du tunnel"
+
+close_tunnel
+success "Port $SSH_PORT_MONITORING libéré — prêt pour les tests."
+
+# ==============================================================================
+# RÉSULTAT FINAL
+# ==============================================================================
+
+separator "SETUP MONITORING TERMINÉ"
+
 echo "  Stack monitoring déployée sur $VM_MONITORING_NAME ($ENV)"
 echo ""
 echo "  ================================================================"
@@ -352,14 +384,14 @@ echo "    --target-resource-id $VM_MONITORING_ID \\"
 echo "    --resource-port 22 \\"
 echo "    --port 2222"
 echo ""
-echo "  Terminal 2 — port-forwarding SSH (laisser ouvert) :"
+echo "  Terminal 2 — port-forwarding SSH vers les services (laisser ouvert) :"
 echo "  ssh -i ~/.ssh/id_rsa_azure -p 2222 azureuser@127.0.0.1 \\"
 echo "    -L 3000:localhost:3000 \\"
 echo "    -L 9090:localhost:9090 \\"
 echo "    -L 9091:localhost:9091 \\"
 echo "    -N"
 echo ""
-echo "  Accès depuis votre navigateur :"
+echo "  Terminal 3 — accès depuis l'ordinateur :"
 echo "  Grafana     : http://localhost:3000  (admin / mot de passe saisi)"
 echo "  Prometheus  : http://localhost:9090"
 echo "  Pushgateway : http://localhost:9091"
@@ -399,7 +431,6 @@ echo ""
 echo "  # Redémarrer toute la stack"
 echo "  docker compose -f /opt/monitoring/docker-compose.yml restart"
 echo ""
-
 echo "  ================================================================"
 echo "  PROCHAINES ÉTAPES"
 echo "  ================================================================"
@@ -414,12 +445,12 @@ echo "  2. Exécuter tous les tests $ENV :"
 echo "     ./tests/test-all.sh $ENV"
 echo ""
 echo "  3. Déployer staging :"
-echo "     ./scripts/deploy-staging.sh"
+echo "     git push  (déclenche TFC automatiquement)"
 echo "     ./scripts/setup-monitoring.sh staging"
 echo ""
 echo "  4. Déployer prod :"
-echo "     ./scripts/deploy-prod.sh"
+echo "     git push  (déclenche TFC automatiquement)"
 echo "     ./scripts/setup-monitoring.sh prod"
 echo ""
 echo "  5. Générer du trafic et observer le pipeline Event Hub → Grafana :"
-echo "     ./scripts/generate-traffic.sh $ENV 5"
+echo "     ./scripts/generate-traffic.sh $ENV 15"
