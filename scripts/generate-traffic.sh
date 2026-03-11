@@ -4,14 +4,14 @@
 # Script : generate-traffic.sh
 # Description : Génère du trafic de test sur la VM Flask via tunnel Bastion.
 #               Envoie des requêtes sur tous les endpoints de l'application :
-#                 - /health              : vérification de l'état
-#                 - /send                : envoi message queue orders
-#                 - /receive             : réception message queue orders
-#                 - /publish             : publication topic events
-#                 - /subscribe/sub-logs  : lecture abonnement logs
-#                 - /subscribe/sub-alerts: lecture abonnement alerts (critical)
-#                 - /metrics/emit        : envoi métriques vers Event Hub
-#                 - /dlq                 : lecture dead-letter queue
+#                 - /health                        : vérification de l'état
+#                 - /api/messages/send             : envoi message queue orders
+#                 - /api/messages/receive          : réception message queue orders
+#                 - /api/events/publish            : publication topic events
+#                 - /api/events/subscribe/sub-logs : lecture abonnement logs
+#                 - /api/events/subscribe/sub-alerts : lecture abonnement alerts
+#                 - /api/metrics/emit              : envoi métriques vers Event Hub
+#                 - /api/messages/dlq              : lecture dead-letter queue
 #
 #               Le trafic génère des métriques visibles dans Grafana
 #               via Prometheus Pushgateway.
@@ -61,6 +61,11 @@ cleanup() {
   if [ -n "$BASTION_TUNNEL_PID" ]; then
     echo "  Fermeture du tunnel Bastion..."
     kill "$BASTION_TUNNEL_PID" 2>/dev/null || true
+    local pid_on_port
+    pid_on_port=$(lsof -ti:"$SSH_PORT_APP" 2>/dev/null || true)
+    if [ -n "$pid_on_port" ]; then
+      kill "$pid_on_port" 2>/dev/null || true
+    fi
   fi
 }
 trap cleanup EXIT INT TERM
@@ -112,7 +117,7 @@ call_endpoint() {
       "$FLASK_URL$path" 2>/dev/null || echo "000")
   fi
 
-  if [ "$http_code" = "200" ] || [ "$http_code" = "201" ]; then
+  if [ "$http_code" = "200" ] || [ "$http_code" = "201" ] || [ "$http_code" = "204" ]; then
     success "$description : HTTP $http_code"
   elif [ "$http_code" = "000" ]; then
     warn "$description : pas de réponse"
@@ -193,13 +198,24 @@ if [ -z "$VM_APP_ID" ]; then
 fi
 success "VM Flask : $VM_APP_NAME"
 
+VM_MONITORING_NAME="vm-${PROJECT_PREFIX}-${ENV}-monitoring"
+VM_MONITORING_ID=$(az vm show \
+  --resource-group "$RESOURCE_GROUP" \
+  --name "$VM_MONITORING_NAME" \
+  --query "id" -o tsv 2>/dev/null || echo "")
+
+if [ -z "$VM_MONITORING_ID" ]; then
+  error "VM Monitoring '$VM_MONITORING_NAME' introuvable."
+  exit 1
+fi
+success "VM Monitoring : $VM_MONITORING_NAME"
+
 # ==============================================================================
 # PHASE 3 : TUNNEL BASTION
 # ==============================================================================
 
 separator "PHASE 3 : Ouverture du tunnel Bastion"
 
-# Fermeture d'un éventuel tunnel existant sur le même port
 if lsof -ti:"$SSH_PORT_APP" &> /dev/null; then
   info "Port $SSH_PORT_APP déjà utilisé — fermeture du tunnel existant..."
   kill "$(lsof -ti:"$SSH_PORT_APP")" 2>/dev/null || true
@@ -230,7 +246,6 @@ success "Tunnel Bastion actif sur port $SSH_PORT_APP"
 
 separator "PHASE 4 : Tunnel SSH vers Flask"
 
-# Fermeture d'un éventuel tunnel SSH existant sur le port Flask
 if lsof -ti:"$FLASK_PORT" &> /dev/null; then
   info "Port $FLASK_PORT déjà utilisé — fermeture..."
   kill "$(lsof -ti:"$FLASK_PORT")" 2>/dev/null || true
@@ -255,7 +270,6 @@ if ! kill -0 "$SSH_TUNNEL_PID" 2>/dev/null; then
 fi
 success "Tunnel SSH actif — Flask accessible sur port $FLASK_PORT"
 
-# Vérification Flask accessible
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
   "$FLASK_URL/health" --max-time 5 2>/dev/null || echo "000")
 
@@ -289,44 +303,44 @@ for i in $(seq 1 "$ITERATIONS"); do
     "Health check"
   TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
 
-  call_endpoint "POST" "/send" \
+  call_endpoint "POST" "/api/messages/send" \
     "{\"order_id\": \"order-${ENV}-${i}\", \"product\": \"item-$i\", \"quantity\": $i}" \
     "Envoi queue orders"
   TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
 
-  call_endpoint "GET" "/receive" "" \
+  call_endpoint "GET" "/api/messages/receive" "" \
     "Réception queue orders"
   TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
 
-  call_endpoint "POST" "/publish" \
-    "{\"event\": \"order-processed\", \"level\": \"info\", \"order_id\": \"order-${ENV}-${i}\"}" \
+  call_endpoint "POST" "/api/events/publish" \
+    "{\"type\": \"order-processed\", \"level\": \"info\", \"payload\": {\"order_id\": \"order-${ENV}-${i}\"}}" \
     "Publication topic events (info)"
   TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
 
   # Un message critical tous les 3 cycles pour déclencher sub-alerts
   if [ $((i % 3)) -eq 0 ]; then
-    call_endpoint "POST" "/publish" \
-      "{\"event\": \"payment-failed\", \"level\": \"critical\", \"order_id\": \"order-${ENV}-${i}\"}" \
+    call_endpoint "POST" "/api/events/publish" \
+      "{\"type\": \"payment-failed\", \"level\": \"critical\", \"payload\": {\"order_id\": \"order-${ENV}-${i}\"}}" \
       "Publication topic events (critical)"
     TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
   fi
 
-  call_endpoint "GET" "/subscribe/sub-logs" "" \
+  call_endpoint "GET" "/api/events/subscribe/sub-logs" "" \
     "Lecture sub-logs"
   TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
 
-  call_endpoint "GET" "/subscribe/sub-alerts" "" \
+  call_endpoint "GET" "/api/events/subscribe/sub-alerts" "" \
     "Lecture sub-alerts"
   TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
 
-  call_endpoint "POST" "/metrics/emit" \
-    "{\"metric_name\": \"orders_processed\", \"value\": $i, \"tags\": {\"env\": \"$ENV\"}}" \
+  call_endpoint "POST" "/api/metrics/emit" \
+    "{\"name\": \"orders_processed\", \"value\": $i, \"labels\": {\"env\": \"$ENV\"}}" \
     "Envoi métriques Event Hub"
   TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
 
   # Lecture DLQ une fois sur deux
   if [ $((i % 2)) -eq 0 ]; then
-    call_endpoint "GET" "/dlq" "" \
+    call_endpoint "GET" "/api/messages/dlq" "" \
       "Lecture dead-letter queue"
     TOTAL_REQUESTS=$((TOTAL_REQUESTS + 1))
   fi
@@ -345,23 +359,23 @@ echo "  Cycles effectués  : $ITERATIONS"
 echo "  Requêtes envoyées : $TOTAL_REQUESTS"
 echo ""
 echo "  Les métriques sont visibles dans Grafana."
-echo "  Pour accéder à Grafana, lancez :"
-echo "    ./scripts/setup-monitoring.sh $ENV"
 echo ""
-echo "  Ou ouvrez manuellement un tunnel vers la VM Monitoring :"
+echo "  Pour accéder à Grafana, ouvrir deux terminaux :"
 echo ""
+echo "  Terminal 1 — tunnel Bastion vers VM monitoring (laisser ouvert) :"
 echo "  az network bastion tunnel \\"
 echo "    --name $BASTION_NAME \\"
 echo "    --resource-group $RESOURCE_GROUP \\"
-echo "    --target-resource-id <vm-monitoring-id> \\"
+echo "    --target-resource-id $VM_MONITORING_ID \\"
 echo "    --resource-port 22 \\"
 echo "    --port 2222"
 echo ""
-echo "  Puis dans un autre terminal :"
+echo "  Terminal 2 — port-forwarding SSH (laisser ouvert) :"
 echo "  ssh -i ~/.ssh/id_rsa_azure -p 2222 azureuser@127.0.0.1 \\"
 echo "    -L 3000:localhost:3000 \\"
 echo "    -L 9090:localhost:9090 \\"
-echo "    -L 9091:localhost:9091"
+echo "    -L 9091:localhost:9091 \\"
+echo "    -N"
 echo ""
 echo "  Grafana     : http://localhost:3000"
 echo "  Prometheus  : http://localhost:9090"
