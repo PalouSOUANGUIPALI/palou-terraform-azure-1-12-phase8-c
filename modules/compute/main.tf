@@ -105,11 +105,12 @@ resource "azurerm_linux_virtual_machine" "app" {
   }
 
   # cloud-init rendu par templatefile() au moment du plan Terraform.
-  # Les variables KEY_VAULT_URL et APP_ENV sont injectées dans le service
-  # systemd flask-app — elles ne sont jamais écrites en clair dans un fichier.
+  # KEY_VAULT_URL, APP_ENV et PUSHGATEWAY_URL sont injectées dans les
+  # services systemd — elles ne sont jamais écrites en clair dans un fichier.
   custom_data = base64encode(templatefile("${path.module}/cloud-init-app.tftpl", {
-    key_vault_url = var.key_vault_url
-    environment   = var.environment
+    key_vault_url    = var.key_vault_url
+    environment      = var.environment
+    monitoring_vm_ip = var.monitoring_vm_ip
   }))
 }
 

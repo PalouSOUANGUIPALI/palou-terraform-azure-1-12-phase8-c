@@ -109,6 +109,9 @@ module "event_hub" {
 # Mais key-vault a besoin du principal ID de la VM pour le RBAC —
 # on résout cette dépendance circulaire en passant l'URI Key Vault
 # via une variable calculée localement.
+# monitoring_vm_ip est calculée depuis le CIDR du subnet monitoring —
+# Azure attribue toujours .4 comme première IP disponible d'un subnet,
+# ce qui rend l'IP prévisible sans dépendre de l'output de la VM.
 # ==============================================================================
 
 module "compute" {
@@ -128,6 +131,11 @@ module "compute" {
   # Azure prévisible sans dépendre du module key-vault, ce qui évite
   # la dépendance circulaire compute <-> key-vault.
   key_vault_url = "https://${var.project_prefix}-${var.environment}-kv.vault.azure.net/"
+
+  # L'IP de la VM Monitoring est calculée depuis le CIDR du subnet monitoring.
+  # cidrhost("10.0.4.0/24", 4) = "10.0.4.4" — prévisible sans dépendre
+  # de l'output de la VM, évite toute dépendance circulaire.
+  monitoring_vm_ip = cidrhost(var.subnet_monitoring_prefix, 4)
 
   tags = var.tags
 

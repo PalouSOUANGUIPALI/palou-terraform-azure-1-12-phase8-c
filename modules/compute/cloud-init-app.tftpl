@@ -8,8 +8,9 @@
 #               Configure deux services systemd :
 #                 flask-app.service          — API Flask sur port 5000
 #                 eventhub-consumer.service  — consumer Event Hub Pushgateway
-#               Les variables KEY_VAULT_URL et APP_ENV sont injectees dans
-#               les services systemd — elles ne sont jamais ecrites en clair.
+#               Les variables KEY_VAULT_URL, APP_ENV et PUSHGATEWAY_URL sont
+#               injectees dans les services systemd — elles ne sont jamais
+#               ecrites en clair dans un fichier.
 #               Le vrai code Flask est embarque directement dans ce template
 #               (pas de git clone) — main.py et consumer.py sont ecrits par
 #               cloud-init et non remplaces apres coup.
@@ -460,6 +461,7 @@ write_files:
       WorkingDirectory=/opt/flask-app
       Environment="KEY_VAULT_URL=${key_vault_url}"
       Environment="APP_ENV=${environment}"
+      Environment="PUSHGATEWAY_URL=http://${monitoring_vm_ip}:9091"
       ExecStart=/opt/flask-app/venv/bin/python3 consumer.py
       Restart=always
       RestartSec=10

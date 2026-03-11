@@ -59,6 +59,11 @@ variable "key_vault_url" {
   type        = string
 }
 
+variable "monitoring_vm_ip" {
+  description = "IP privée de la VM Monitoring — calculée depuis le CIDR du subnet monitoring (cidrhost + 4). Injectée dans eventhub-consumer.service comme PUSHGATEWAY_URL pour que le consumer puisse pousser les metriques vers Pushgateway quel que soit l'environnement."
+  type        = string
+}
+
 variable "tags" {
   description = "Tags communs appliqués à toutes les ressources"
   type        = map(string)

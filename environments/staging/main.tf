@@ -84,7 +84,16 @@ module "compute" {
   vm_size_app          = var.vm_size_app
   vm_size_monitoring   = var.vm_size_monitoring
   vm_ssh_public_key    = var.vm_ssh_public_key
+
+  # L'URI Key Vault est construite localement — elle suit une convention
+  # Azure prévisible sans dépendre du module key-vault, ce qui évite
+  # la dépendance circulaire compute <-> key-vault.
   key_vault_url        = "https://${var.project_prefix}-${var.environment}-kv.vault.azure.net/"
+
+  # L'IP de la VM Monitoring est calculée depuis le CIDR du subnet monitoring.
+  # cidrhost("10.1.4.0/24", 4) = "10.1.4.4" — prévisible sans dépendre
+  # de l'output de la VM, évite toute dépendance circulaire.
+  monitoring_vm_ip = cidrhost(var.subnet_monitoring_prefix, 4)
 
   tags = var.tags
 
