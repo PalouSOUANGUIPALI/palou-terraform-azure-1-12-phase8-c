@@ -44,16 +44,19 @@ resource "azurerm_servicebus_namespace" "main" {
   resource_group_name = var.resource_group_name
   sku                 = var.servicebus_sku
 
-  # Accès public désactivé — accès exclusivement via Private Endpoint
-  public_network_access_enabled = false
+  # Accès public désactivé uniquement en prod (SKU Premium + Private Endpoint).
+  # En dev/staging (SKU Standard), pas de Private Endpoint — accès public
+  # requis pour que la VM puisse atteindre le namespace via Internet Azure.
+  public_network_access_enabled = var.servicebus_sku == "Premium" ? false : true
 
-  # Minimum TLS 1.2 — bonne pratique de sécurité
   minimum_tls_version = "1.2"
 
-  # local_auth_enabled = false désactive l'authentification par clé SAS.
-  # Toute authentification passe par Azure AD (Managed Identity).
-  # Le SDK azure-servicebus supporte DefaultAzureCredential.
-  local_auth_enabled = false
+  # SAS keys désactivées uniquement en prod (SKU Premium).
+  # En dev/staging, la connection string SAS stockée dans Key Vault
+  # est utilisée pour l'authentification — local_auth doit rester activé.
+  # En prod, l'authentification passe exclusivement par Azure AD.
+  local_auth_enabled = var.servicebus_sku == "Premium" ? false : true
 
   tags = local.common_tags
 }
+
