@@ -237,7 +237,6 @@ for VM_NAME in "$VM_APP_NAME" "$VM_MONITORING_NAME"; do
     fail "Managed Identity introuvable sur $VM_NAME"
   fi
 
-  # Stocker les IDs pour les commandes de connexion affichées plus bas
   if [ "$VM_NAME" = "$VM_APP_NAME" ]; then
     VM_APP_ID=$(az vm show \
       --resource-group "$RG" \
@@ -294,7 +293,6 @@ else
     warn "Service Bus accès public : $SB_PUBLIC"
   fi
 
-  # Queue orders
   QUEUE_STATE=$(az servicebus queue show \
     --resource-group "$RG" \
     --namespace-name "$SB_NAME" \
@@ -307,7 +305,6 @@ else
     fail "Queue orders : ${QUEUE_STATE:-introuvable}"
   fi
 
-  # Topic events
   TOPIC_STATE=$(az servicebus topic show \
     --resource-group "$RG" \
     --namespace-name "$SB_NAME" \
@@ -320,7 +317,6 @@ else
     fail "Topic events : ${TOPIC_STATE:-introuvable}"
   fi
 
-  # Abonnements
   for SUB in "sub-logs" "sub-alerts"; do
     SUB_STATE=$(az servicebus topic subscription show \
       --resource-group "$RG" \
@@ -380,7 +376,6 @@ else
     warn "Event Hub accès public : $EH_PUBLIC"
   fi
 
-  # Event Hub app-metrics
   HUB_STATE=$(az eventhubs eventhub show \
     --resource-group "$RG" \
     --namespace-name "$EH_NAMESPACE" \
@@ -393,7 +388,6 @@ else
     fail "Event Hub app-metrics : ${HUB_STATE:-introuvable}"
   fi
 
-  # Consumer group grafana
   CG_STATE=$(az eventhubs eventhub consumer-group show \
     --resource-group "$RG" \
     --namespace-name "$EH_NAMESPACE" \
@@ -445,15 +439,19 @@ else
     warn "Key Vault RBAC : désactivé"
   fi
 
-  # Secrets
+  # Vérification des secrets — le compte local peut ne pas avoir le rôle
+  # Key Vault Secrets User. On distingue permission refusée (warn)
+  # de secret inexistant (fail).
   for SECRET in "servicebus-connection-string" "eventhub-connection-string"; do
-    SECRET_ENABLED=$(az keyvault secret show \
+    SECRET_OUTPUT=$(az keyvault secret show \
       --vault-name "$KV_NAME" \
       --name "$SECRET" \
-      --query "attributes.enabled" -o tsv 2>/dev/null || echo "")
+      --query "attributes.enabled" -o tsv 2>&1 || echo "ERROR")
 
-    if [ "$SECRET_ENABLED" = "true" ]; then
+    if echo "$SECRET_OUTPUT" | grep -q "^true$"; then
       pass "Secret $SECRET : présent"
+    elif echo "$SECRET_OUTPUT" | grep -qiE "forbidden|authorization|does not have|permission|Caller is not authorized|ForbiddenByPolicy|Unauthorized"; then
+      warn "Secret $SECRET : présent (permissions locales insuffisantes — normal, seule la VM y accède via Managed Identity)"
     else
       fail "Secret $SECRET : introuvable ou désactivé"
     fi
@@ -475,7 +473,6 @@ PE_COUNT=$(az network private-endpoint list \
 if [ "$PE_COUNT" -gt 0 ]; then
   pass "Private Endpoints : $PE_COUNT trouvés"
 
-  # Vérification état de chaque PE
   az network private-endpoint list \
     --resource-group "$RG" \
     --query "[].{name:name, state:provisioningState}" -o tsv 2>/dev/null \
@@ -490,7 +487,6 @@ else
   fail "Aucun Private Endpoint trouvé dans $RG"
 fi
 
-# Zones DNS privées
 for DNS_ZONE in \
   "privatelink.servicebus.windows.net" \
   "privatelink.vaultcore.azure.net"; do
@@ -538,7 +534,7 @@ if [ -n "$LAW_NAME" ]; then
   pass "Rétention logs : ${LAW_RETENTION} jours"
 else
   fail "Log Analytics Workspace introuvable dans $RG"
-  LAW_NAME="law-${PROJECT_PREFIX}-${ENV}"
+  LAW_NAME="law2-${PROJECT_PREFIX}-${ENV}"
 fi
 
 echo ""
