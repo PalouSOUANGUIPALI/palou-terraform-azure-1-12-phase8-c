@@ -4,6 +4,9 @@
 # Description : Configuration de la datasource Prometheus pour Grafana.
 #               Prometheus tourne dans le même réseau Docker que Grafana —
 #               accessible par nom de service sur le port 9090.
+#               L'UID est fixé à "prometheus" pour correspondre aux dashboards
+#               provisionnés — sans UID fixe, Grafana en génère un aléatoire
+#               et les panels affichent "No data".
 # Auteur : Palou
 # Date : Mars 2026
 # ==============================================================================
@@ -13,6 +16,7 @@ apiVersion: 1
 datasources:
   - name: Prometheus
     type: prometheus
+    uid: prometheus
     access: proxy
     url: http://prometheus:9090
     isDefault: true
