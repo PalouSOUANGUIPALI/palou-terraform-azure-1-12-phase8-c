@@ -197,6 +197,23 @@ resource "azurerm_network_security_group" "app" {
     destination_address_prefix = "Internet"
   }
 
+  # AMQP vers Internet — Service Bus et Event Hub SKU Standard (dev/staging)
+  # Sans Private Endpoint, le trafic AMQP sort vers les IPs publiques Azure.
+  # Port 5671 : AMQP over TLS (production)
+  # Port 5672 : AMQP plain (fallback SDK)
+  security_rule {
+    name                       = "Allow-AMQP-Internet-Outbound"
+    priority                   = 115
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["5671", "5672"]
+    source_address_prefix      = var.subnet_app_prefix
+    destination_address_prefix = "Internet"
+  }
+  
+
   # HTTPS vers snet-pe — Service Bus et Event Hub (REST) + Key Vault
   security_rule {
     name                       = "Allow-App-to-PE-HTTPS-Outbound"
