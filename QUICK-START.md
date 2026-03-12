@@ -229,7 +229,42 @@ ssh -i ~/.ssh/id_rsa_azure -p 2223 azureuser@127.0.0.1 \
 
 ```bash
 # Terminal 3 — depuis l'ordinateur
+
+# Health check
 curl http://localhost:5000/health
+
+# Envoyer un message dans la queue orders
+curl -X POST http://localhost:5000/api/messages/send \
+  -H 'Content-Type: application/json' \
+  -d '{"order_id": "001", "product": "laptop", "quantity": 1}'
+
+# Recevoir un message (PEEK_LOCK)
+curl http://localhost:5000/api/messages/receive
+
+# Lire la Dead-Letter Queue
+curl http://localhost:5000/api/messages/dlq
+
+# Retraiter un message en DLQ
+curl -X POST http://localhost:5000/api/messages/dlq/reprocess
+
+# Publier sur le topic events (reçu par sub-logs uniquement — level = 'info')
+curl -X POST http://localhost:5000/api/events/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "order-processed", "level": "info", "order_id": "001"}'
+
+# Publier sur le topic events (reçu par sub-logs ET sub-alerts — level = 'critical')
+curl -X POST http://localhost:5000/api/events/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "payment-failed", "level": "critical", "order_id": "001"}'
+
+# Lire depuis les subscriptions
+curl http://localhost:5000/api/events/subscribe/sub-logs
+curl http://localhost:5000/api/events/subscribe/sub-alerts
+
+# Émettre des métriques vers Event Hub → pipeline Grafana
+curl -X POST http://localhost:5000/api/metrics/emit \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "orders_processed", "value": 42, "labels": {"env": "dev"}}'
 ```
 
 | Environnement | Port Bastion tunnel | Port Flask local | URL                   |
@@ -240,47 +275,16 @@ curl http://localhost:5000/health
 
 Endpoints Flask disponibles :
 
-| Endpoint                   | Méthode | Rôle                                             |
-| -------------------------- | ------- | ------------------------------------------------ |
-| /health                    | GET     | Statut Service Bus, Event Hub et Key Vault       |
-| /send                      | POST    | Envoie un message dans la queue orders           |
-| /receive                   | GET     | Reçoit un message de la queue orders (PEEK_LOCK) |
-| /dlq                       | GET     | Lit les messages de la dead-letter queue         |
-| /dlq/reprocess             | POST    | Renvoie le premier message DLQ dans orders       |
-| /publish                   | POST    | Publie un événement sur le topic events          |
-| /subscribe/\<subscription> | GET     | Reçoit depuis sub-logs ou sub-alerts             |
-| /metrics/emit              | POST    | Envoie des métriques vers Event Hub app-metrics  |
-
-Observer les patterns Service Bus et Event Hub :
-
-```bash
-# Envoyer et recevoir un message (queue orders)
-curl -X POST http://localhost:5000/send \
-  -H 'Content-Type: application/json' \
-  -d '{"order_id": "001", "product": "laptop", "quantity": 1}'
-
-curl http://localhost:5000/receive
-
-# Publier sur le topic events
-# → reçu par sub-logs uniquement (level = 'info')
-curl -X POST http://localhost:5000/publish \
-  -H 'Content-Type: application/json' \
-  -d '{"event": "order-processed", "level": "info", "order_id": "001"}'
-
-# → reçu par sub-logs ET sub-alerts (level = 'critical')
-curl -X POST http://localhost:5000/publish \
-  -H 'Content-Type: application/json' \
-  -d '{"event": "payment-failed", "level": "critical", "order_id": "001"}'
-
-# Lire depuis les subscriptions
-curl http://localhost:5000/subscribe/sub-logs
-curl http://localhost:5000/subscribe/sub-alerts
-
-# Émettre des métriques vers Event Hub → pipeline Grafana
-curl -X POST http://localhost:5000/metrics/emit \
-  -H 'Content-Type: application/json' \
-  -d '{"metric_name": "orders_processed", "value": 42, "tags": {"env": "dev"}}'
-```
+| Endpoint                    | Méthode | Rôle                                             |
+| --------------------------- | ------- | ------------------------------------------------ |
+| /health                     | GET     | Statut Service Bus, Event Hub et Key Vault       |
+| /api/messages/send          | POST    | Envoie un message dans la queue orders           |
+| /api/messages/receive       | GET     | Reçoit un message de la queue orders (PEEK_LOCK) |
+| /api/messages/dlq           | GET     | Lit les messages de la dead-letter queue         |
+| /api/messages/dlq/reprocess | POST    | Renvoie le premier message DLQ dans orders       |
+| /api/events/publish         | POST    | Publie un événement sur le topic events          |
+| /api/events/subscribe/<sub> | GET     | Reçoit depuis sub-logs ou sub-alerts             |
+| /api/metrics/emit           | POST    | Envoie des métriques vers Event Hub app-metrics  |
 
 ## Accès au Monitoring (Grafana / Prometheus)
 

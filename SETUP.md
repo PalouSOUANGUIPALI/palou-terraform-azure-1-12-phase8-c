@@ -27,7 +27,6 @@
 ### Terraform CLI (>= 1.6)
 
 ```bash
-# macOS
 brew install terraform
 
 # Vérification
@@ -37,7 +36,6 @@ terraform version
 ### Azure CLI
 
 ```bash
-# macOS
 brew install azure-cli
 
 # Vérification
@@ -397,11 +395,9 @@ Le script va :
 2. Copier les fichiers du dossier `monitoring/` sur la VM
    (`docker-compose.yml`, `prometheus.yml`, dashboards Grafana)
 3. Demander le mot de passe Grafana interactivement :
-
-```
+   ```
    Mot de passe Grafana admin (GF_ADMIN_PASSWORD) :
-```
-
+   ```
 4. Lancer `docker compose up -d` avec le mot de passe injecté
 5. Vérifier que les trois conteneurs sont `Up`
 
@@ -443,6 +439,14 @@ correctement déployées :
 
 Le script affiche également les commandes de tunnel et les
 requêtes KQL prêtes à l'emploi.
+
+Note sur la vérification des secrets Key Vault : le script tente
+de lire les secrets depuis l'ordinateur. Seule la Managed Identity
+de la VM Flask a le rôle `Key Vault Secrets User`. Une réponse
+`Forbidden` signifie que le secret existe mais que le compte local
+n'a pas l'autorisation de le lire — c'est le comportement attendu
+et le script affiche un avertissement. Seule une erreur "secret
+introuvable" indique un problème réel.
 
 ---
 
@@ -494,37 +498,37 @@ troisième terminal.
 curl http://localhost:5000/health
 
 # Envoyer un message dans la queue orders
-curl -X POST http://localhost:5000/send \
+curl -X POST http://localhost:5000/api/messages/send \
   -H "Content-Type: application/json" \
   -d '{"order_id": "001", "product": "laptop", "quantity": 1}'
 
 # Recevoir un message (PEEK_LOCK)
-curl http://localhost:5000/receive
+curl http://localhost:5000/api/messages/receive
 
 # Publier sur le topic events (reçu par sub-logs uniquement)
-curl -X POST http://localhost:5000/publish \
+curl -X POST http://localhost:5000/api/events/publish \
   -H "Content-Type: application/json" \
-  -d '{"event": "order-processed", "level": "info", "order_id": "001"}'
+  -d '{"type": "order-processed", "level": "info", "order_id": "001"}'
 
 # Publier sur le topic events (reçu par sub-logs ET sub-alerts)
-curl -X POST http://localhost:5000/publish \
+curl -X POST http://localhost:5000/api/events/publish \
   -H "Content-Type: application/json" \
-  -d '{"event": "payment-failed", "level": "critical", "order_id": "001"}'
+  -d '{"type": "payment-failed", "level": "critical", "order_id": "001"}'
 
 # Lire depuis les subscriptions
-curl http://localhost:5000/subscribe/sub-logs
-curl http://localhost:5000/subscribe/sub-alerts
+curl http://localhost:5000/api/events/subscribe/sub-logs
+curl http://localhost:5000/api/events/subscribe/sub-alerts
 
 # Lire la Dead-Letter Queue
-curl http://localhost:5000/dlq
+curl http://localhost:5000/api/messages/dlq
 
 # Retraiter un message en DLQ
-curl -X POST http://localhost:5000/dlq/reprocess
+curl -X POST http://localhost:5000/api/messages/dlq/reprocess
 
 # Émettre des métriques vers Event Hub
-curl -X POST http://localhost:5000/metrics/emit \
+curl -X POST http://localhost:5000/api/metrics/emit \
   -H "Content-Type: application/json" \
-  -d '{"metric_name": "orders_processed", "value": 42, "tags": {"env": "dev"}}'
+  -d '{"name": "orders_processed", "value": 42, "labels": {"env": "dev"}}'
 ```
 
 ### Vérification de l'application depuis la VM app
@@ -837,6 +841,10 @@ journalctl -u flask-app -n 50
 
 ```bash
 # Vérifier les secrets dans Key Vault
+# Note : une réponse Forbidden signifie que le secret existe mais
+# que le compte local n'a pas le rôle Key Vault Secrets User.
+# C'est le comportement attendu — seule la MI de la VM Flask a ce rôle.
+# Seule une erreur "secret introuvable" indique un problème réel.
 az keyvault secret list \
   --vault-name phase8c-dev-kv \
   --query "[].{name: name, enabled: attributes.enabled}" \
@@ -860,12 +868,34 @@ az role assignment list \
 
 Résultat attendu : `Key Vault Secrets User`
 
-### Service Bus inaccessible depuis Flask
+### Service Bus inaccessible depuis Flask — connexion refusée
 
 > Sur ordinateur.
 
+En dev/staging (SKU Standard), Service Bus n'a pas de Private
+Endpoint. La connexion passe par les IPs publiques Azure avec
+le protocole **AMQP sur le port 5671**. Le NSG de `snet-app`
+doit autoriser ce trafic sortant vers Internet.
+
 ```bash
-# Vérifier le namespace
+# Vérifier que la règle AMQP outbound est présente dans le NSG
+NSG_APP=$(az network nsg list \
+  -g rg-phase8c-dev \
+  --query "[?contains(name,'app')].name" -o tsv)
+
+az network nsg rule list \
+  --resource-group rg-phase8c-dev \
+  --nsg-name $NSG_APP \
+  --query "[?direction=='Outbound'].{Name:name, Priority:priority, Access:access, Port:destinationPortRange}" \
+  -o table
+```
+
+La règle `Allow-AMQP-Internet-Outbound` sur le port 5671 doit
+être présente. Sans elle, le SDK azure-servicebus échoue à
+établir la connexion malgré une authentification AAD correcte.
+
+```bash
+# Vérifier le namespace Service Bus
 az servicebus namespace show \
   --resource-group rg-phase8c-dev \
   --name sbns-phase8c-dev \
@@ -879,12 +909,6 @@ az servicebus queue show \
   --name orders \
   --query "status" -o tsv
 ```
-
-En dev/staging (SKU Standard), Service Bus n'a pas de Private
-Endpoint. La connexion passe par les IPs publiques Azure avec
-authentification AAD via la connection string dans Key Vault.
-Vérifiez que `local_auth_enabled = false` et que le NSG autorise
-HTTPS 443 vers Internet depuis snet-app.
 
 ### Event Hub inaccessible depuis consumer.py
 
@@ -907,29 +931,43 @@ az eventhubs eventhub consumer-group show \
   --query "name" -o tsv
 ```
 
-### Grafana n'affiche pas les métriques
+### Grafana n'affiche pas les métriques — datasource UID périmé
 
 > Sur la VM monitoring (via Bastion SSH sur port 2222).
 
+Si Grafana tourne mais que les dashboards affichent "No data"
+malgré des métriques présentes dans Pushgateway, le volume Docker
+de Grafana conserve peut-être un UID de datasource obsolète
+d'un déploiement précédent.
+
 ```bash
-# Vérifier l'état des conteneurs Docker Compose
+# Vérifier que Pushgateway a bien des métriques
+curl http://localhost:9091/metrics | grep -v "^#" | head -20
+
+# Vérifier l'état des conteneurs
 docker compose -f /opt/monitoring/docker-compose.yml ps
 
-# Vérifier les logs de chaque conteneur
+# Si Pushgateway a des métriques mais Grafana affiche "No data",
+# supprimer le volume et redémarrer avec le mot de passe Grafana :
+cd /opt/monitoring
+docker compose down -v
+GF_ADMIN_PASSWORD='votre_mot_de_passe' docker compose up -d
+
+# Vérifier que les trois conteneurs sont Up
+docker compose ps
+```
+
+Après le redémarrage, Grafana re-provisionne automatiquement
+le datasource Prometheus avec l'UID correct défini dans
+`datasource.yml`. Le dashboard se recharge et affiche les
+métriques dès que Prometheus a effectué un scrape (15 secondes).
+
+```bash
+# Vérifier les logs de chaque conteneur si le problème persiste
 docker compose -f /opt/monitoring/docker-compose.yml logs --tail=30 grafana
 docker compose -f /opt/monitoring/docker-compose.yml logs --tail=30 prometheus
 docker compose -f /opt/monitoring/docker-compose.yml logs --tail=30 pushgateway
-
-# Vérifier que Pushgateway a des métriques
-curl http://localhost:9091/metrics | grep -v "^#" | head -20
-
-# Forcer le re-provisionnement des dashboards Grafana
-docker compose -f /opt/monitoring/docker-compose.yml restart grafana
 ```
-
-Si Grafana tourne mais que les dashboards sont vides, vérifiez
-que consumer.py envoie bien des métriques vers Pushgateway en
-consultant `journalctl -u eventhub-consumer` sur la VM app.
 
 ### NSG bloque internet outbound sur les VMs
 
@@ -963,9 +1001,10 @@ az network nsg rule list \
   -o table
 ```
 
-Les règles `Allow-...-HTTP-Internet-Outbound` (port 80) et
-`Allow-...-HTTPS-Internet-Outbound` (port 443) doivent être
-présentes sur les deux NSGs.
+Les règles `Allow-...-HTTP-Internet-Outbound` (port 80),
+`Allow-...-HTTPS-Internet-Outbound` (port 443) et
+`Allow-AMQP-Internet-Outbound` (port 5671, snet-app uniquement)
+doivent être présentes.
 
 ### cloud-init : fichiers écrits dans un répertoire inexistant
 
@@ -1023,6 +1062,16 @@ az extension add --name ssh
 az extension add --name bastion
 ```
 
+Si le tunnel échoue avec une erreur `enableTunneling`, activez
+le tunneling manuellement :
+
+```bash
+az network bastion update \
+  --name bastion-phase8c-dev \
+  --resource-group rg-phase8c-dev \
+  --enable-tunneling true
+```
+
 ### Host key changed après recréation d'une VM
 
 > Sur ordinateur.
@@ -1030,6 +1079,17 @@ az extension add --name bastion
 ```bash
 ssh-keygen -R "[127.0.0.1]:2222"   # VM monitoring
 ssh-keygen -R "[127.0.0.1]:2223"   # VM app
+```
+
+### Port déjà occupé (2222 ou 2223)
+
+> Sur ordinateur.
+
+Si un tunnel Bastion précédent n'a pas été fermé proprement :
+
+```bash
+kill $(lsof -ti:2222) 2>/dev/null; sleep 1
+kill $(lsof -ti:2223) 2>/dev/null; sleep 1
 ```
 
 ---
@@ -1062,7 +1122,7 @@ CONFIGURATION MONITORING (sur ordinateur)
 VERIFICATION CLOUD-INIT (sur les VMs via Bastion SSH)
 ------------------------------------------------------
 13. Attendre 5 a 10 minutes apres creation des VMs
-14. Se connecter a la VM app via Bastion (port 2223) :
+14. Se connecter a la VM app via Bastion :
       az network bastion ssh \
         --name bastion-phase8c-dev \
         --resource-group rg-phase8c-dev \
@@ -1101,14 +1161,14 @@ Terminal 2 (sur ordinateur) — port-forwarding Flask :
 
 Terminal 3 (sur ordinateur) — appels Flask :
       curl http://localhost:5000/health
-      curl -X POST http://localhost:5000/send \
+      curl -X POST http://localhost:5000/api/messages/send \
         -H "Content-Type: application/json" \
         -d '{"order_id": "001", "product": "laptop", "quantity": 1}'
-      curl http://localhost:5000/receive
-      curl -X POST http://localhost:5000/publish \
+      curl http://localhost:5000/api/messages/receive
+      curl -X POST http://localhost:5000/api/events/publish \
         -H "Content-Type: application/json" \
-        -d '{"event": "payment-failed", "level": "critical", "order_id": "001"}'
-      curl http://localhost:5000/subscribe/sub-alerts
+        -d '{"type": "payment-failed", "level": "critical", "order_id": "001"}'
+      curl http://localhost:5000/api/events/subscribe/sub-alerts
 
 ACCES MONITORING DEPUIS ORDINATEUR
 -------------------------------------

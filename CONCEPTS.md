@@ -123,8 +123,8 @@ Règles clés dans la Phase 8C :
 | Deny All Outbound               | \*   | \*                 | \*                   | Zero-trust par défaut                     |
 
 En dev/staging (SKU Standard), Service Bus et Event Hub n'ont pas
-de Private Endpoint — les connexions sortent par HTTPS 443 vers
-Internet et sont protégées par authentification AAD.
+de Private Endpoint — les connexions sortent par AMQP 5671 (Service Bus)
+et HTTPS 443 vers Internet, protégées par authentification AAD.
 
 ---
 
@@ -140,20 +140,20 @@ La **VM Flask** est le composant applicatif principal de la Phase 8C.
   - Installation de Python, Flask, azure-servicebus, azure-eventhub,
     azure-identity, azure-keyvault-secrets, gunicorn
   - Installation et activation de `eventhub-consumer.service`
-  - Seule la variable `KEY_VAULT_URL` est injectée par Terraform
+  - Variables injectées par Terraform : `KEY_VAULT_URL` et `PUSHGATEWAY_URL`
 
 L'application Flask expose les endpoints suivants :
 
-| Endpoint                   | Méthode | Rôle                                             |
-| -------------------------- | ------- | ------------------------------------------------ |
-| /health                    | GET     | Statut Service Bus, Event Hub et Key Vault       |
-| /send                      | POST    | Envoie un message dans la queue orders           |
-| /receive                   | GET     | Reçoit un message de la queue orders (PEEK_LOCK) |
-| /dlq                       | GET     | Lit les messages de la dead-letter queue         |
-| /dlq/reprocess             | POST    | Renvoie le premier message DLQ dans orders       |
-| /publish                   | POST    | Publie un événement sur le topic events          |
-| /subscribe/\<subscription> | GET     | Reçoit depuis sub-logs ou sub-alerts             |
-| /metrics/emit              | POST    | Envoie des métriques vers Event Hub app-metrics  |
+| Endpoint                    | Méthode | Rôle                                             |
+| --------------------------- | ------- | ------------------------------------------------ |
+| /health                     | GET     | Statut Service Bus, Event Hub et Key Vault       |
+| /api/messages/send          | POST    | Envoie un message dans la queue orders           |
+| /api/messages/receive       | GET     | Reçoit un message de la queue orders (PEEK_LOCK) |
+| /api/messages/dlq           | GET     | Lit les messages de la dead-letter queue         |
+| /api/messages/dlq/reprocess | POST    | Renvoie le premier message DLQ dans orders       |
+| /api/events/publish         | POST    | Publie un événement sur le topic events          |
+| /api/events/subscribe/<sub> | GET     | Reçoit depuis sub-logs ou sub-alerts             |
+| /api/metrics/emit           | POST    | Envoie des métriques vers Event Hub app-metrics  |
 
 ---
 
@@ -298,7 +298,7 @@ la Phase 8C. Il connecte l'application Flask à Grafana via Event Hub.
 
 ```
 Flask app (VM app)
-  └── POST /metrics/emit
+  └── POST /api/metrics/emit
         └── EventHubProducerClient → Event Hub app-metrics
 
 consumer.py (VM app — systemd : eventhub-consumer.service)
@@ -318,6 +318,11 @@ Il lit depuis le consumer group `grafana` — indépendant de `$Default`.
 Le checkpointing (`update_checkpoint`) est appelé après chaque push
 réussi vers Pushgateway pour éviter de rejouer les événements au
 redémarrage du service.
+
+La variable d'environnement `PUSHGATEWAY_URL` est injectée dans
+`eventhub-consumer.service` par Terraform via cloud-init, avec la
+valeur `http://<IP_VM_MONITORING>:9091`. L'IP est calculée par
+`cidrhost(var.subnet_monitoring_prefix, 4)` — toujours `.4` dans Azure.
 
 ---
 
@@ -444,7 +449,7 @@ Dans la Phase 8C, il y a **deux templates cloud-init** :
   - Installation Python, Flask, SDK azure-servicebus, azure-eventhub,
     azure-identity, azure-keyvault-secrets
   - Démarrage des services systemd `flask-app` et `eventhub-consumer`
-  - Injection de `KEY_VAULT_URL` uniquement
+  - Injection de `KEY_VAULT_URL` et `PUSHGATEWAY_URL`
 
 - `cloud-init-monitoring.tftpl` : initialise la VM Monitoring
   - Installation de Docker et Docker Compose uniquement
@@ -482,17 +487,17 @@ AZURE : rg-phase8c-dev
 │   ├── AzureBastionSubnet ──── Azure Bastion (Standard SKU)
 │   │
 │   ├── snet-app ──── NSG ──── VM Flask (Ubuntu 22.04)
-│   │                           ├── Managed Identity (system-assigned)
-│   │                           ├── Flask + azure-servicebus + azure-eventhub
-│   │                           ├── azure-identity + azure-keyvault-secrets
-│   │                           ├── systemd : flask-app
-│   │                           └── systemd : eventhub-consumer (consumer group grafana)
+│   │                          ├── Managed Identity (system-assigned)
+│   │                          ├── Flask + azure-servicebus + azure-eventhub
+│   │                          ├── azure-identity + azure-keyvault-secrets
+│   │                          ├── systemd : flask-app
+│   │                          └── systemd : eventhub-consumer (consumer group grafana)
 │   │
 │   ├── snet-monitoring ── NSG ── VM Monitoring (Ubuntu 22.04)
-│   │                              ├── Docker Compose
-│   │                              ├── Prometheus  :9090
-│   │                              ├── Grafana     :3000
-│   │                              └── Pushgateway :9091
+│   │                             ├── Docker Compose
+│   │                             ├── Prometheus  :9090
+│   │                             ├── Grafana     :3000
+│   │                             └── Pushgateway :9091
 │   │
 │   └── snet-pe ──── NSG ───── Private Endpoint Key Vault
 │                               (+ PE Service Bus en prod)
@@ -546,13 +551,13 @@ DÉMARRAGE FLASK (une seule fois)
                             ├── GET secret : servicebus-connection-string
                             └── GET secret : eventhub-connection-string
 
-MESSAGING (POST /send)
+MESSAGING (POST /api/messages/send)
   VM Flask
     └── ServiceBusClient.from_connection_string(sb_conn_str)
           └── get_queue_sender("orders").send_messages(msg)
                 └── Service Bus Namespace (PE snet-pe en prod / public en dev)
 
-PUBLICATION (POST /publish)
+PUBLICATION (POST /api/events/publish)
   VM Flask
     └── ServiceBusClient.from_connection_string(sb_conn_str)
           └── get_topic_sender("events").send_messages(msg)
@@ -561,7 +566,7 @@ PUBLICATION (POST /publish)
                     sub-alerts (reçoit si level = 'critical')
 
 PIPELINE MÉTRIQUES
-  Flask POST /metrics/emit
+  Flask POST /api/metrics/emit
     └── EventHubProducerClient → Event Hub app-metrics
 
   consumer.py (systemd — consumer group : grafana)
@@ -575,28 +580,28 @@ PIPELINE MÉTRIQUES
 
 ## Résumé
 
-| Composant                 | Rôle                                                                       |
-| ------------------------- | -------------------------------------------------------------------------- |
-| Resource Group            | Conteneur global par environnement                                         |
-| VNet                      | Réseau privé isolé par environnement                                       |
-| Subnets (x4)              | VM app / VM monitoring / services PaaS / Bastion                           |
-| NSG                       | Pare-feu réseau, zero-trust                                                |
-| VM Flask                  | Flask + eventhub-consumer.service, deux services systemd                   |
-| VM Monitoring             | Prometheus + Grafana + Pushgateway via Docker Compose                      |
-| Managed Identity          | Authentification AAD pour Key Vault uniquement, sans secret                |
-| Service Bus               | Queue orders + Topic events avec filtres SQL                               |
-| Dead-Letter Queue         | Capture les messages en erreur, retraitement via /dlq/reprocess            |
-| Event Hub                 | Streaming de métriques, consumer group grafana pour le pipeline            |
-| eventhub-consumer.service | Systemd sur VM app — lit EH et pousse vers Pushgateway                     |
-| Key Vault                 | Distribution sécurisée des connection strings SB et EH                     |
-| Private Endpoints         | Accès privé Key Vault (tous env) + Service Bus (prod)                      |
-| Zones DNS privées (x2)    | servicebus.windows.net (SB+EH partagée), vaultcore.azure.net               |
-| Azure Bastion             | Accès SSH sécurisé aux deux VMs sans IP publique                           |
-| Log Analytics Workspace   | Centralisation des logs et métriques par environnement                     |
-| Prometheus / Grafana      | Métriques applicatives Event Hub en temps réel                             |
-| Pushgateway               | Pont entre consumer.py (push) et Prometheus (scrape)                       |
-| Cloud-Init (x2)           | Initialisation VM app + VM monitoring, GF_ADMIN_PASSWORD jamais stocké     |
-| RBAC                      | Key Vault Secrets User (Flask) + Monitoring Metrics Publisher (Monitoring) |
+| Composant                 | Rôle                                                                         |
+| ------------------------- | ---------------------------------------------------------------------------- |
+| Resource Group            | Conteneur global par environnement                                           |
+| VNet                      | Réseau privé isolé par environnement                                         |
+| Subnets (x4)              | VM app / VM monitoring / services PaaS / Bastion                             |
+| NSG                       | Pare-feu réseau, zero-trust                                                  |
+| VM Flask                  | Flask + eventhub-consumer.service, deux services systemd                     |
+| VM Monitoring             | Prometheus + Grafana + Pushgateway via Docker Compose                        |
+| Managed Identity          | Authentification AAD pour Key Vault uniquement, sans secret                  |
+| Service Bus               | Queue orders + Topic events avec filtres SQL                                 |
+| Dead-Letter Queue         | Capture les messages en erreur, retraitement via /api/messages/dlq/reprocess |
+| Event Hub                 | Streaming de métriques, consumer group grafana pour le pipeline              |
+| eventhub-consumer.service | Systemd sur VM app — lit EH et pousse vers Pushgateway                       |
+| Key Vault                 | Distribution sécurisée des connection strings SB et EH                       |
+| Private Endpoints         | Accès privé Key Vault (tous env) + Service Bus (prod)                        |
+| Zones DNS privées (x2)    | servicebus.windows.net (SB+EH partagée), vaultcore.azure.net                 |
+| Azure Bastion             | Accès SSH sécurisé aux deux VMs sans IP publique                             |
+| Log Analytics Workspace   | Centralisation des logs et métriques par environnement                       |
+| Prometheus / Grafana      | Métriques applicatives Event Hub en temps réel                               |
+| Pushgateway               | Pont entre consumer.py (push) et Prometheus (scrape)                         |
+| Cloud-Init (x2)           | Initialisation VM app + VM monitoring, GF_ADMIN_PASSWORD jamais stocké       |
+| RBAC                      | Key Vault Secrets User (Flask) + Monitoring Metrics Publisher (Monitoring)   |
 
 Cette architecture illustre l'intégration de deux paradigmes de
 messagerie complémentaires :

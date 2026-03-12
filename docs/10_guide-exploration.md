@@ -23,16 +23,18 @@ Bastion.
 
 ### Extensions Azure CLI
 
+> Sur ordinateur.
+
 ```bash
-# Sur l'ordinateur
 az extension add --name ssh
 az extension add --name bastion
 ```
 
 ### Variables d'Environnement
 
+> Sur ordinateur — adapter selon l'environnement exploré.
+
 ```bash
-# Sur l'ordinateur — adapter selon l'environnement exploré
 export ENV=dev
 export RG=rg-phase8c-${ENV}
 export BASTION=bastion-phase8c-${ENV}
@@ -40,8 +42,9 @@ export BASTION=bastion-phase8c-${ENV}
 
 ### Récupérer les IDs des VMs
 
+> Sur ordinateur.
+
 ```bash
-# Sur l'ordinateur
 VM_APP_ID=$(az vm show \
   --resource-group "$RG" \
   --name "vm-phase8c-${ENV}-app" \
@@ -59,8 +62,10 @@ Deux séries de tunnels sont nécessaires selon ce qu'on veut tester.
 
 #### Accès Flask (VM app)
 
+> Sur ordinateur — deux terminaux requis.
+
 ```bash
-# Terminal 1 — tunnel Bastion vers VM app
+# Terminal 1 — tunnel Bastion vers VM app (laisser ouvert)
 az network bastion tunnel \
   --name "$BASTION" \
   --resource-group "$RG" \
@@ -68,15 +73,17 @@ az network bastion tunnel \
   --resource-port 22 \
   --port 2223
 
-# Terminal 2 — tunnel SSH avec port-forwarding Flask
+# Terminal 2 — port-forwarding SSH Flask (laisser ouvert)
 ssh -i ~/.ssh/id_rsa_azure -p 2223 azureuser@127.0.0.1 \
   -L 5000:localhost:5000 -N
 ```
 
 #### Accès Monitoring (VM monitoring)
 
+> Sur ordinateur — deux terminaux requis.
+
 ```bash
-# Terminal 3 — tunnel Bastion vers VM monitoring
+# Terminal 3 — tunnel Bastion vers VM monitoring (laisser ouvert)
 az network bastion tunnel \
   --name "$BASTION" \
   --resource-group "$RG" \
@@ -84,7 +91,7 @@ az network bastion tunnel \
   --resource-port 22 \
   --port 2222
 
-# Terminal 4 — tunnel SSH avec port-forwarding Grafana + Prometheus
+# Terminal 4 — port-forwarding SSH Grafana + Prometheus (laisser ouvert)
 ssh -i ~/.ssh/id_rsa_azure -p 2222 azureuser@127.0.0.1 \
   -L 3000:localhost:3000 \
   -L 9090:localhost:9090 \
@@ -98,8 +105,9 @@ ssh -i ~/.ssh/id_rsa_azure -p 2222 azureuser@127.0.0.1 \
 
 ### Vue d'Ensemble du Resource Group
 
+> Sur ordinateur.
+
 ```bash
-# Sur l'ordinateur
 az resource list \
   --resource-group "$RG" \
   --output table
@@ -118,13 +126,19 @@ vm-phase8c-{env}-monitoring   Microsoft.Compute/virtualMachines
 bastion-phase8c-{env}         Microsoft.Network/bastionHosts
 vnet-phase8c-{env}            Microsoft.Network/virtualNetworks
 pe-kv-phase8c-{env}           Microsoft.Network/privateEndpoints
-phase8c-{env}-law             Microsoft.OperationalInsights/workspaces
+law2-phase8c-{env}            Microsoft.OperationalInsights/workspaces
 ```
+
+Note : le Private Endpoint Service Bus (`pe-sb-phase8c-{env}`) n'existe
+qu'en prod (SKU Premium). En dev et staging (SKU Standard), le namespace
+Service Bus et Event Hub sont accessibles via leurs IPs publiques Azure —
+seul Key Vault dispose d'un Private Endpoint dans tous les environnements.
 
 ### Vérifier le Namespace Service Bus
 
+> Sur ordinateur.
+
 ```bash
-# Sur l'ordinateur
 az servicebus namespace show \
   --resource-group "$RG" \
   --name "sbns-phase8c-${ENV}" \
@@ -137,18 +151,26 @@ az servicebus namespace show \
   --output json
 ```
 
-Résultat attendu :
+Résultat attendu pour dev et staging (Standard SKU) :
 
 ```json
 {
   "name": "sbns-phase8c-dev",
   "sku": "Standard",
   "provisioningState": "Succeeded",
-  "localAuth": true
+  "localAuth": false
 }
 ```
 
+`localAuth: false` signifie que `disableLocalAuth = false`, c'est-à-dire
+que l'authentification locale (SAS keys) est **activée** — ce qui est
+requis pour le SKU Standard car Managed Identity seule ne fonctionne pas
+sans Premium. En prod (Premium), la valeur attendue est `true` (SAS désactivé,
+Managed Identity uniquement).
+
 ### Vérifier la Queue et le Topic
+
+> Sur ordinateur.
 
 ```bash
 # Queue orders
@@ -182,8 +204,9 @@ done
 
 ### Vérifier le Namespace Event Hub
 
+> Sur ordinateur.
+
 ```bash
-# Sur l'ordinateur
 az eventhubs namespace show \
   --resource-group "$RG" \
   --name "evhns-phase8c-${ENV}" \
@@ -218,8 +241,9 @@ az eventhubs eventhub consumer-group show \
 
 ### Health Check Flask
 
+> Sur ordinateur — tunnels Flask actifs requis (Terminaux 1 et 2).
+
 ```bash
-# Sur l'ordinateur — tunnel Flask actif requis
 curl -s http://localhost:5000/health | python3 -m json.tool
 ```
 
@@ -236,54 +260,60 @@ Résultat attendu :
 
 ### Envoyer et Recevoir un Message (Queue)
 
+> Sur ordinateur — tunnels Flask actifs requis.
+
 ```bash
 # Envoyer un message dans la queue orders
-curl -s -X POST http://localhost:5000/send \
+curl -s -X POST http://localhost:5000/api/messages/send \
   -H "Content-Type: application/json" \
   -d '{"order_id": "test-001", "product": "laptop", "quantity": 1}' \
   | python3 -m json.tool
 
 # Recevoir le message
-curl -s http://localhost:5000/receive | python3 -m json.tool
+curl -s http://localhost:5000/api/messages/receive | python3 -m json.tool
 ```
 
 ### Publier sur le Topic Events
 
+> Sur ordinateur — tunnels Flask actifs requis.
+
 ```bash
 # Publier un événement info (reçu par sub-logs uniquement)
-curl -s -X POST http://localhost:5000/publish \
+curl -s -X POST http://localhost:5000/api/events/publish \
   -H "Content-Type: application/json" \
   -d '{"event": "order-processed", "level": "info", "order_id": "test-001"}' \
   | python3 -m json.tool
 
 # Publier un événement critical (reçu par sub-logs ET sub-alerts)
-curl -s -X POST http://localhost:5000/publish \
+curl -s -X POST http://localhost:5000/api/events/publish \
   -H "Content-Type: application/json" \
   -d '{"event": "payment-failed", "level": "critical", "order_id": "test-001"}' \
   | python3 -m json.tool
 
 # Lire depuis sub-logs (doit contenir les deux messages)
-curl -s http://localhost:5000/subscribe/sub-logs | python3 -m json.tool
+curl -s http://localhost:5000/api/events/subscribe/sub-logs | python3 -m json.tool
 
 # Lire depuis sub-alerts (doit contenir uniquement le message critical)
-curl -s http://localhost:5000/subscribe/sub-alerts | python3 -m json.tool
+curl -s http://localhost:5000/api/events/subscribe/sub-alerts | python3 -m json.tool
 ```
 
 ### Tester la Dead-Letter Queue
 
+> Sur ordinateur — tunnels Flask actifs requis.
+
 ```bash
-# Envoyer un message invalide (sans order_id)
-curl -s -X POST http://localhost:5000/send \
+# Envoyer un message invalide (sans product requis)
+curl -s -X POST http://localhost:5000/api/messages/send \
   -H "Content-Type: application/json" \
-  -d '{"product": "laptop"}' \
+  -d '{"order_id": "bad-001"}' \
   | python3 -m json.tool
 
-# Lire la DLQ (après que max_delivery_count soit dépassé
+# Inspecter la DLQ (après que max_delivery_count soit dépassé
 # ou si le consumer appelle dead_letter_message() explicitement)
-curl -s http://localhost:5000/dlq | python3 -m json.tool
+curl -s http://localhost:5000/api/messages/dlq | python3 -m json.tool
 
 # Retraiter le premier message en DLQ
-curl -s -X POST http://localhost:5000/dlq/reprocess | python3 -m json.tool
+curl -s -X POST http://localhost:5000/api/messages/dlq/reprocess | python3 -m json.tool
 
 # Vérifier le count de messages en DLQ via Azure CLI
 az servicebus queue show \
@@ -300,14 +330,14 @@ az servicebus queue show \
 
 ### Émettre des Métriques
 
-```bash
-# Sur l'ordinateur — tunnel Flask actif requis
+> Sur ordinateur — tunnels Flask actifs requis.
 
-# Émettre plusieurs métriques
+```bash
+# Émettre plusieurs métriques vers Event Hub
 for METRIC in "orders_processed:42" "queue_depth:10" "consumer_lag:3"; do
   NAME="${METRIC%%:*}"
   VALUE="${METRIC##*:}"
-  curl -s -X POST http://localhost:5000/metrics/emit \
+  curl -s -X POST http://localhost:5000/api/metrics/emit \
     -H "Content-Type: application/json" \
     -d "{
       \"metric_name\": \"$NAME\",
@@ -320,8 +350,10 @@ done
 
 ### Vérifier consumer.py sur la VM App
 
+> Sur la VM app — connexion SSH via Terminal 1 (bastion tunnel ouvert sur 2223).
+
 ```bash
-# Sur la VM app (connexion SSH via terminal Bastion ouvert sur 2223)
+# Se connecter à la VM app
 ssh -i ~/.ssh/id_rsa_azure -p 2223 azureuser@127.0.0.1
 
 # Statut du service consumer
@@ -336,8 +368,9 @@ exit
 
 ### Vérifier Pushgateway
 
+> Sur ordinateur — tunnels monitoring actifs requis (Terminaux 3 et 4).
+
 ```bash
-# Sur l'ordinateur — tunnel monitoring actif requis
 curl -s http://localhost:9091/metrics | grep -v "^#" | grep -E "orders|queue|consumer"
 ```
 
@@ -351,9 +384,9 @@ consumer_lag{env="dev",instance="",job="eventhub_consumer",source="flask-app"} 3
 
 ### Vérifier Prometheus
 
-```bash
-# Sur l'ordinateur — tunnel monitoring actif requis
+> Sur ordinateur — tunnels monitoring actifs requis.
 
+```bash
 # Vérifier que Pushgateway est scrappé
 curl -s http://localhost:9090/api/v1/targets \
   | python3 -c "
@@ -379,7 +412,7 @@ for r in d['data']['result']:
 
 ### Grafana
 
-Avec le tunnel SSH actif sur le port 3000 (voir Prérequis) :
+> Sur ordinateur — tunnels monitoring actifs requis (Terminaux 3 et 4).
 
 ```
 URL      : http://localhost:3000
@@ -387,7 +420,7 @@ Login    : admin
 Password : le mot de passe saisi lors de ./scripts/setup-monitoring.sh
 ```
 
-Dashboard disponible : **Event Hub Metrics** (provisionné automatiquement)
+Dashboard disponible : **Event Hub Metrics** (provisionné automatiquement).
 
 Panels :
 
@@ -396,7 +429,20 @@ Panels :
 - consumer_lag — retard du consumer Event Hub
 - processing_time — temps de traitement des messages
 
+Si les panels sont vides, vérifier que la datasource Prometheus a bien
+l'UID `prometheus` dans `monitoring/grafana/provisioning/datasources/datasource.yml`.
+En cas de doute, forcer le re-provisionnement :
+
+```bash
+# Sur la VM monitoring (via Bastion SSH sur 2222)
+ssh -i ~/.ssh/id_rsa_azure -p 2222 azureuser@127.0.0.1
+
+sudo docker compose -f /opt/monitoring/docker-compose.yml restart grafana
+```
+
 ### Prometheus
+
+> Sur ordinateur — tunnels monitoring actifs requis.
 
 ```
 URL : http://localhost:9090
@@ -419,26 +465,33 @@ rate(orders_processed[5m])
 
 ### Pushgateway
 
+> Sur ordinateur — tunnels monitoring actifs requis.
+
 ```
 URL : http://localhost:9091
 ```
 
-L'interface web du Pushgateway affiche toutes les métriques
-stockées en mémoire, regroupées par job.
+L'interface web du Pushgateway affiche toutes les métriques stockées
+en mémoire, regroupées par job.
 
 ---
 
 ## Requêtes KQL Log Analytics
 
-### Accéder au Workspace
+### Récupérer l'ID du Workspace
+
+> Sur ordinateur.
 
 ```bash
-# Sur l'ordinateur
 WORKSPACE_ID=$(az monitor log-analytics workspace show \
   --resource-group "$RG" \
-  --workspace-name "phase8c-${ENV}-law" \
+  --workspace-name "law2-phase8c-${ENV}" \
   --query customerId -o tsv)
 ```
+
+Note : le workspace est nommé `law2-phase8c-{env}` (préfixe `law2` et non `law`)
+pour contourner le soft-delete de 14 jours d'Azure lors des déploiements
+successifs.
 
 ### Messages en Dead-Letter
 
@@ -509,17 +562,27 @@ az monitor log-analytics query \
 
 ### Flask ne démarre pas
 
+> Sur la VM app — via Bastion SSH sur 2223.
+
 ```bash
-# Sur la VM app (via Bastion SSH sur 2223)
+ssh -i ~/.ssh/id_rsa_azure -p 2223 azureuser@127.0.0.1
+
 systemctl status flask-app
 journalctl -u flask-app -n 100 --no-pager
 sudo tail -30 /var/log/cloud-init-output.log
 ```
 
+Note : cloud-init peut prendre jusqu'à 10 minutes après la création
+de la VM. Si le service n'est pas encore démarré, attendre et relancer
+la vérification.
+
 ### consumer.py ne reçoit pas de métriques
 
+> Sur la VM app — via Bastion SSH sur 2223.
+
 ```bash
-# Sur la VM app (via Bastion SSH sur 2223)
+ssh -i ~/.ssh/id_rsa_azure -p 2223 azureuser@127.0.0.1
+
 systemctl status eventhub-consumer
 journalctl -u eventhub-consumer -n 50 --no-pager
 
@@ -532,56 +595,103 @@ systemctl cat eventhub-consumer | grep PUSHGATEWAY_URL
 
 ### Pushgateway ne reçoit pas de métriques
 
+> Sur la VM app — via Bastion SSH sur 2223.
+
 ```bash
-# Vérifier la connectivité depuis VM app vers VM monitoring
-# (sur VM app via Bastion)
+ssh -i ~/.ssh/id_rsa_azure -p 2223 azureuser@127.0.0.1
+
+# Récupérer l'IP privée de la VM monitoring
 IP_MONITORING=$(az vm show \
   --resource-group "$RG" \
   --name "vm-phase8c-${ENV}-monitoring" \
   --show-details \
   --query privateIps -o tsv)
 
+# Tester la connectivité depuis VM app vers VM monitoring
 curl -v "http://${IP_MONITORING}:9091/metrics" 2>&1 | head -20
 ```
 
 ### Grafana n'affiche pas les métriques
 
+> Sur la VM monitoring — via Bastion SSH sur 2222.
+
 ```bash
-# Sur VM monitoring (via Bastion SSH sur 2222)
+ssh -i ~/.ssh/id_rsa_azure -p 2222 azureuser@127.0.0.1
 
 # Vérifier Docker Compose
-docker compose ps
-docker compose logs --tail=30 grafana
+sudo docker compose -f /opt/monitoring/docker-compose.yml ps
+sudo docker compose -f /opt/monitoring/docker-compose.yml logs --tail=30 grafana
 
 # Forcer le re-provisionnement des dashboards
-docker compose restart grafana
+# (nécessaire si le fichier datasource.yml a été modifié après le premier démarrage)
+sudo docker compose -f /opt/monitoring/docker-compose.yml down
+sudo docker volume rm monitoring_grafana_data
+sudo docker compose -f /opt/monitoring/docker-compose.yml up -d
 
 # Vérifier que Pushgateway a des métriques
 curl http://localhost:9091/metrics | grep -v "^#" | head -20
 ```
 
+Note : si les panels Grafana affichent "No data" malgré des métriques
+dans Pushgateway, vérifier que `uid: prometheus` est bien présent dans
+`monitoring/grafana/provisioning/datasources/datasource.yml`. Sans cet UID
+explicite, Grafana génère un UID aléatoire au démarrage et les dashboards
+ne trouvent pas leur datasource.
+
 ### Résolution DNS depuis les VMs
 
-```bash
-# Sur VM app (via Bastion SSH sur 2223)
+> Sur la VM app — via Bastion SSH sur 2223.
 
-# Service Bus — Standard : IP publique attendue
+```bash
+ssh -i ~/.ssh/id_rsa_azure -p 2223 azureuser@127.0.0.1
+
+# Service Bus Standard — IP publique Azure attendue (normal en dev/staging)
 dig sbns-phase8c-${ENV}.servicebus.windows.net +short
 
-# Event Hub — Standard : IP publique attendue
+# Event Hub Standard — IP publique Azure attendue (normal en dev/staging)
 dig evhns-phase8c-${ENV}.servicebus.windows.net +short
 
-# Key Vault — IP privée attendue (10.x.3.x)
+# Key Vault — IP privée attendue (10.x.3.x) — Private Endpoint présent dans tous les envs
 dig phase8c-${ENV}-kv.vault.azure.net +short
 ```
 
+Service Bus et Event Hub utilisent leurs IPs publiques en dev/staging
+(SKU Standard, pas de Private Endpoint disponible). C'est le comportement
+attendu. Seul Key Vault dispose d'un Private Endpoint dans tous les
+environnements.
+
 ### Réinitialiser les Tunnels après Recréation d'une VM
 
+> Sur ordinateur.
+
 ```bash
-# Sur l'ordinateur — si SSH refuse après recréation d'une VM
+# Si SSH refuse la connexion après recréation d'une VM (clé SSH changed warning)
 ssh-keygen -R "[127.0.0.1]:2222"   # VM monitoring
 ssh-keygen -R "[127.0.0.1]:2223"   # VM app
 ```
+
+### Vérifier les Règles NSG (Service Bus AMQP)
+
+> Sur ordinateur.
+
+```bash
+# Vérifier que le NSG autorise AMQP sortant (requis pour Service Bus Standard)
+az network nsg rule list \
+  --resource-group "$RG" \
+  --nsg-name "nsg-app-phase8c-${ENV}" \
+  --query "[?contains(name, 'amqp') || contains(name, 'AMQP')].{
+    name: name,
+    priority: priority,
+    direction: direction,
+    access: access,
+    destinationPortRange: destinationPortRange
+  }" \
+  --output table
+```
+
+Les ports 5671 et 5672 (AMQP et AMQP+TLS) doivent être autorisés en
+sortie vers Internet pour que Flask puisse se connecter au Service Bus
+Standard depuis `snet-app`.
 
 ---
 

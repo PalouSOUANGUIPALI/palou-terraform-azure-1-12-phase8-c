@@ -36,17 +36,17 @@ observables via les endpoints dédiés.
   │   ├── AzureBastionSubnet ──── Azure Bastion (Standard SKU)
   │   │
   │   ├── snet-app ──── NSG ──── VM app (Ubuntu 22.04)
-  │   │                           ├── Managed Identity (system-assigned)
-  │   │                           ├── Flask + azure-servicebus + azure-eventhub
-  │   │                           ├── azure-identity + azure-keyvault-secrets
-  │   │                           ├── systemd : flask-app
-  │   │                           └── systemd : eventhub-consumer
+  │   │                          ├── Managed Identity (system-assigned)
+  │   │                          ├── Flask + azure-servicebus + azure-eventhub
+  │   │                          ├── azure-identity + azure-keyvault-secrets
+  │   │                          ├── systemd : flask-app
+  │   │                          └── systemd : eventhub-consumer
   │   │
   │   ├── snet-monitoring ── NSG ── VM monitoring (Ubuntu 22.04)
-  │   │                              ├── Docker Compose
-  │   │                              ├── Prometheus  :9090
-  │   │                              ├── Grafana     :3000
-  │   │                              └── Pushgateway :9091
+  │   │                             ├── Docker Compose
+  │   │                             ├── Prometheus  :9090
+  │   │                             ├── Grafana     :3000
+  │   │                             └── Pushgateway :9091
   │   │
   │   └── snet-pe ──── NSG ───── Private Endpoint Key Vault
   │                               (+ PE Service Bus en prod)
@@ -95,20 +95,20 @@ DÉMARRAGE FLASK (une seule fois)
                             ├── GET servicebus-connection-string
                             └── GET eventhub-connection-string
 
-QUEUE POINT-À-POINT (POST /send → GET /receive)
+QUEUE POINT-À-POINT (POST /api/messages/send → GET /api/messages/receive)
   VM app
     ├── ServiceBusClient → get_queue_sender("orders") → send_messages()
     └── ServiceBusClient → get_queue_receiver("orders") → receive_messages()
                             (PEEK_LOCK → complete après traitement)
 
-PUBLISH/SUBSCRIBE (POST /publish → GET /subscribe/<sub>)
+PUBLISH/SUBSCRIBE (POST /api/events/publish → GET /api/events/subscribe/<sub>)
   VM app
     └── ServiceBusClient → get_topic_sender("events")
           └── message + application_properties={"level": "critical"}
                 ├── sub-logs   : reçoit tous les messages
                 └── sub-alerts : reçoit uniquement level = 'critical'
 
-PIPELINE MÉTRIQUES (POST /metrics/emit → Grafana)
+PIPELINE MÉTRIQUES (POST /api/metrics/emit → Grafana)
   VM app
     └── EventHubProducerClient → Event Hub app-metrics
           └── consumer.py (systemd — consumer group : grafana)
@@ -119,23 +119,54 @@ PIPELINE MÉTRIQUES (POST /metrics/emit → Grafana)
 
 ### Application Flask
 
-| Endpoint                   | Méthode | Rôle                                             |
-| -------------------------- | ------- | ------------------------------------------------ |
-| /health                    | GET     | Statut Service Bus, Event Hub et Key Vault       |
-| /send                      | POST    | Envoie un message dans la queue orders           |
-| /receive                   | GET     | Reçoit un message de la queue orders (PEEK_LOCK) |
-| /dlq                       | GET     | Lit les messages de la dead-letter queue         |
-| /dlq/reprocess             | POST    | Renvoie le premier message DLQ dans orders       |
-| /publish                   | POST    | Publie un événement sur le topic events          |
-| /subscribe/\<subscription> | GET     | Reçoit depuis sub-logs ou sub-alerts             |
-| /metrics/emit              | POST    | Envoie des métriques vers Event Hub app-metrics  |
+| Endpoint                    | Méthode | Rôle                                             |
+| --------------------------- | ------- | ------------------------------------------------ |
+| /health                     | GET     | Statut Service Bus, Event Hub et Key Vault       |
+| /api/messages/send          | POST    | Envoie un message dans la queue orders           |
+| /api/messages/receive       | GET     | Reçoit un message de la queue orders (PEEK_LOCK) |
+| /api/messages/dlq           | GET     | Lit les messages de la dead-letter queue         |
+| /api/messages/dlq/reprocess | POST    | Renvoie le premier message DLQ dans orders       |
+| /api/events/publish         | POST    | Publie un événement sur le topic events          |
+| /api/events/subscribe/<sub> | GET     | Reçoit depuis sub-logs ou sub-alerts             |
+| /api/metrics/emit           | POST    | Envoie des métriques vers Event Hub app-metrics  |
+
+### Exemples d'appels
+
+```bash
+# Envoyer et recevoir un message (queue orders)
+curl -X POST http://localhost:5000/api/messages/send \
+  -H 'Content-Type: application/json' \
+  -d '{"order_id": "001", "product": "laptop", "quantity": 1}'
+
+curl http://localhost:5000/api/messages/receive
+
+# Publier sur le topic events
+# → reçu par sub-logs uniquement (level = 'info')
+curl -X POST http://localhost:5000/api/events/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "order-processed", "level": "info", "order_id": "001"}'
+
+# → reçu par sub-logs ET sub-alerts (level = 'critical')
+curl -X POST http://localhost:5000/api/events/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"type": "payment-failed", "level": "critical", "order_id": "001"}'
+
+# Lire depuis les subscriptions
+curl http://localhost:5000/api/events/subscribe/sub-logs
+curl http://localhost:5000/api/events/subscribe/sub-alerts
+
+# Émettre des métriques vers Event Hub → pipeline Grafana
+curl -X POST http://localhost:5000/api/metrics/emit \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "orders_processed", "value": 42, "labels": {"env": "dev"}}'
+```
 
 ### Dead-Letter Queue
 
 Les messages qui dépassent `max_delivery_count` (10 tentatives) sont
 automatiquement transférés dans `orders/$DeadLetterQueue`. L'endpoint
-`/dlq/reprocess` remet le premier message DLQ dans la queue principale
-pour un nouveau cycle de traitement.
+`/api/messages/dlq/reprocess` remet le premier message DLQ dans la
+queue principale pour un nouveau cycle de traitement.
 
 ---
 
@@ -192,6 +223,15 @@ indépendant de Flask. Il utilise le consumer group `grafana` — distinct
 de `$Default` — pour éviter toute interférence avec d'autres
 consommateurs. Le checkpointing est mis à jour après chaque push
 réussi vers Pushgateway.
+
+### PUSHGATEWAY_URL injectée par Terraform
+
+La variable d'environnement `PUSHGATEWAY_URL` est injectée dans
+`eventhub-consumer.service` par Terraform via cloud-init. Sa valeur
+est calculée avec `cidrhost(var.subnet_monitoring_prefix, 4)` —
+Azure réserve toujours `.4` comme première IP disponible dans un
+subnet. Cela garantit que consumer.py pointe vers la bonne VM
+Monitoring quel que soit l'environnement.
 
 ### Modules avec fichiers dédiés
 
@@ -503,33 +543,67 @@ avec `./scripts/destroy-all.sh`.
 - `public_network_access_enabled = true` est requis sur Key Vault
   pour que TFC puisse créer les secrets lors du `terraform apply` —
   TFC tourne dans le cloud, pas dans le VNet
+
 - Service Bus et Event Hub partagent la zone DNS privée
   `privatelink.servicebus.windows.net` — une seule zone suffit pour
   les deux namespaces en prod
+
 - `local_auth_enabled = false` désactive les SAS keys mais pas la
   connection string AAD — Flask continue à s'authentifier via la
   connection string stockée dans Key Vault
+
 - Le SKU Basic d'Event Hub ne supporte qu'un seul consumer group
   (`$Default`) — le SKU Standard est requis pour le consumer group
   `grafana` utilisé par consumer.py
+
 - La stack Docker Compose ne se lance pas via cloud-init — l'utilisation
   de `setup-monitoring.sh` après chaque apply est obligatoire pour
   démarrer Prometheus, Grafana et Pushgateway
+
 - `write_files` dans cloud-init s'exécute avant `runcmd` — écrire
   dans `/tmp/` et copier dans `runcmd` après `mkdir -p`, jamais
   directement dans un répertoire qui n'existe pas encore
+
 - Le checkpointing Event Hub (`update_checkpoint`) doit être appelé
   après chaque push réussi vers Pushgateway — sans lui, consumer.py
   rejoue tous les événements depuis le début à chaque redémarrage
+
 - cloud-init ne s'exécute qu'une seule fois au premier boot — pour
   propager une correction dans `app/main.py` ou `app/consumer.py`
   sur une VM existante, appliquer le correctif manuellement et
   redémarrer le service concerné (`sudo systemctl restart flask-app`
   ou `sudo systemctl restart eventhub-consumer`) ; seule une VM
   recréée récupèrera automatiquement la version à jour via cloud-init
+
 - Les fichiers du dossier `monitoring/` (dashboards, prometheus.yml)
   ne sont pas copiés par cloud-init — relancer `setup-monitoring.sh`
   pour propager les modifications sur la VM monitoring
+
+- En dev/staging (Service Bus SKU Standard), le NSG de `snet-app` doit
+  autoriser le trafic **AMQP sortant sur le port 5671** vers Internet —
+  le SDK azure-servicebus utilise AMQP par défaut et non HTTPS ;
+  sans cette règle, la connexion au namespace est refusée au niveau
+  réseau malgré une authentification AAD correcte
+
+- `PUSHGATEWAY_URL` doit correspondre à l'IP réelle de la VM Monitoring
+  dans chaque environnement — la valeur est calculée par Terraform avec
+  `cidrhost(var.subnet_monitoring_prefix, 4)` et injectée dans
+  `eventhub-consumer.service` via cloud-init ; si cette variable pointe
+  vers la mauvaise IP (par exemple l'IP de dev dans staging), consumer.py
+  échoue silencieusement à pousser les métriques et Grafana reste vide
+
+- Le volume Docker de Grafana peut conserver un UID de datasource
+  périmé après un redéploiement — si les dashboards affichent
+  "No data" malgré des métriques présentes dans Pushgateway, supprimer
+  le volume et redémarrer : `docker compose down -v` suivi de
+  `GF_ADMIN_PASSWORD='mot_de_passe' docker compose up -d`
+
+- `validate.sh` ne peut pas lire les secrets Key Vault depuis
+  l'ordinateur — seule la Managed Identity de la VM Flask a le rôle
+  `Key Vault Secrets User` ; une réponse `Forbidden` de l'API Key Vault
+  signifie que le secret existe mais que le compte local n'a pas
+  l'autorisation de le lire (comportement attendu, avertissement) ;
+  seule une réponse "secret introuvable" doit être traitée comme erreur
 
 ---
 
